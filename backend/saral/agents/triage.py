@@ -52,9 +52,10 @@ _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good mornin
 
 # --- Entity extractors ---
 
-# IDs must contain a digit (so plain words like "cover" are not mistaken for an id).
-_POLICY_RE = re.compile(r"\b(?:POL|policy)\s*[-#:]?\s*([A-Z0-9]*\d[A-Z0-9]*)\b", re.IGNORECASE)
-_CLAIM_RE = re.compile(r"\b(?:CLM|claim)\s*[-#:]?\s*([A-Z0-9]*\d[A-Z0-9]*)\b", re.IGNORECASE)
+# Match the full ID token (prefix + digits) so "CLM2001" is captured whole, and plain
+# words like "cover" are never mistaken for an id.
+_POLICY_RE = re.compile(r"\bPOL\d+\b", re.IGNORECASE)
+_CLAIM_RE = re.compile(r"\bCLM\d+\b", re.IGNORECASE)
 _MOBILE_RE = re.compile(r"\b(?:\+?91[-\s]?)?([6-9]\d{9})\b")
 _EMAIL_RE = re.compile(r"\b([\w.+-]+@[\w-]+\.[\w.-]+)\b")
 
@@ -80,9 +81,9 @@ def detect_language(text: str) -> Language:
 def extract_entities(text: str) -> dict:
     entities: dict = {}
     if m := _POLICY_RE.search(text):
-        entities["policy_id"] = m.group(1).upper()
+        entities["policy_id"] = m.group(0).upper()
     if m := _CLAIM_RE.search(text):
-        entities["claim_id"] = m.group(1).upper()
+        entities["claim_id"] = m.group(0).upper()
     if m := _MOBILE_RE.search(text):
         entities["mobile"] = m.group(1)
     if m := _EMAIL_RE.search(text):

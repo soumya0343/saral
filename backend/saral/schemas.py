@@ -49,6 +49,35 @@ class IntentResult(BaseModel):
         return max(self.intents, key=lambda i: i.confidence, default=None)
 
 
+# --- Retrieval ---
+
+
+class Passage(BaseModel):
+    """A retrieved chunk with its source citation."""
+
+    doc_id: str  # source filename (citation)
+    chunk_id: int
+    text: str
+    score: float = 0.0
+
+    @property
+    def citation(self) -> str:
+        return f"{self.doc_id}#{self.chunk_id}"
+
+
+# --- Account actions ---
+
+
+class ActionRecord(BaseModel):
+    tool: str
+    args: dict[str, Any] = Field(default_factory=dict)
+    idempotency_key: str | None = None
+    ok: bool = False
+    result: dict[str, Any] | None = None
+    error: str | None = None
+    needs_clarification: str | None = None  # prompt to re-ask the user
+
+
 # --- Streaming trace events (worker -> SSE) ---
 
 TraceEventType = Literal[
@@ -56,6 +85,9 @@ TraceEventType = Literal[
     "agent_started",
     "agent_finished",
     "intent",
+    "route",
+    "retrieval",
+    "action",
     "final",
     "error",
     "run_finished",

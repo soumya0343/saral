@@ -45,6 +45,11 @@ class Settings(BaseSettings):
     anthropic_model: str = "claude-sonnet-4-6"
     sarvam_model: str = "sarvam-m"
 
+    # --- Retrieval ---
+    corpus_dir: str = "data/policy_corpus"
+    embedder: Literal["hashing", "sentence-transformer"] = "hashing"
+    retrieval_top_k: int = 4
+
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard
     tool_timeout_s: float = 10.0
