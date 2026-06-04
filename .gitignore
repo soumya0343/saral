@@ -21,9 +21,10 @@ out/
 npm-debug.log*
 yarn-error.log*
 
-# Data artifacts (keep source corpus + scenarios, ignore built indexes)
+# Data artifacts (keep source corpus + scenarios, ignore built indexes + eval runs)
 data/**/*.index
 data/**/*.faiss
+data/eval_reports/
 *.sqlite3
 
 # OS / editor
