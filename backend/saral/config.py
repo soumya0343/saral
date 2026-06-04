@@ -50,6 +50,9 @@ class Settings(BaseSettings):
     embedder: Literal["hashing", "sentence-transformer"] = "hashing"
     retrieval_top_k: int = 4
 
+    # --- Compliance ---
+    pii_backend: Literal["regex", "presidio"] = "regex"
+
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard
     tool_timeout_s: float = 10.0

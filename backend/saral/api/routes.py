@@ -10,10 +10,12 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from saral.compliance.pii import redact_pii
+from saral.config import get_settings
 from saral.db.models import Conversation, Message
 from saral.db.session import get_session
 from saral.runbus import enqueue_run, subscribe_trace
-from saral.schemas import RunRequest
+from saral.schemas import HistoryTurn, RunRequest
 
 router = APIRouter()
 
@@ -68,6 +70,18 @@ async def send_message(
     if convo is None:
         raise HTTPException(status_code=404, detail="conversation not found")
 
+    # Short-term memory: last N turns, oldest first, for context injection.
+    n = get_settings().conversation_memory_turns
+    recent = (
+        await db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.sequence_num.desc())
+            .limit(n)
+        )
+    ).all()
+    history = [HistoryTurn(role=m.role, content=m.content) for m in reversed(recent)]
+
     next_seq = (
         await db.scalar(
             select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
@@ -78,7 +92,7 @@ async def send_message(
     msg = Message(
         conversation_id=conversation_id,
         role="user",
-        content=body.content,  # Phase 3: redact PII before store
+        content=redact_pii(body.content),  # FR-6: redact PII before store
         sequence_num=next_seq,
     )
     db.add(msg)
@@ -91,6 +105,7 @@ async def send_message(
             conversation_id=conversation_id,
             user_id=convo.user_id,
             message=body.content,
+            history=history,
         )
     )
     return MessageAccepted(

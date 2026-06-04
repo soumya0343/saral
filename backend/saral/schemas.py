@@ -78,6 +78,31 @@ class ActionRecord(BaseModel):
     needs_clarification: str | None = None  # prompt to re-ask the user
 
 
+# --- Compliance ---
+
+ComplianceVerdict = Literal["allow", "block", "escalate"]
+
+
+class ComplianceDecision(BaseModel):
+    decision: ComplianceVerdict
+    reason: str
+    actor: str = "compliance"  # which agent/check produced it
+    action: str | None = None  # the action being gated, if any
+
+
+# --- Final response (Synthesis output schema, TRD §12.6) ---
+
+ResolutionStatus = Literal["resolved", "escalated", "blocked", "degraded"]
+
+
+class ResponsePayload(BaseModel):
+    resolution_status: ResolutionStatus
+    message: str
+    actions_taken: list[str] = Field(default_factory=list)
+    citations: list[str] = Field(default_factory=list)
+    escalated: bool = False
+
+
 # --- Streaming trace events (worker -> SSE) ---
 
 TraceEventType = Literal[
@@ -87,7 +112,9 @@ TraceEventType = Literal[
     "intent",
     "route",
     "retrieval",
+    "compliance",
     "action",
+    "synthesis",
     "final",
     "error",
     "run_finished",
@@ -105,8 +132,14 @@ class TraceEvent(BaseModel):
 # --- Run bus message (API -> Redis Stream -> worker) ---
 
 
+class HistoryTurn(BaseModel):
+    role: str
+    content: str
+
+
 class RunRequest(BaseModel):
     run_id: str
     conversation_id: str
     user_id: str
     message: str
+    history: list[HistoryTurn] = Field(default_factory=list)  # short-term memory (last N turns)

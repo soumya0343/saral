@@ -21,6 +21,7 @@ async def execute_run(req: RunRequest) -> RunState:
         conversation_id=req.conversation_id,
         user_id=req.user_id,
         raw_message=req.message,
+        history=req.history,
     )
 
     def ev(type_, agent=None, data=None) -> TraceEvent:
@@ -70,6 +71,18 @@ async def execute_run(req: RunRequest) -> RunState:
                             },
                         )
                     )
+                if "compliance_decisions" in update:
+                    await publish_trace(
+                        ev(
+                            "compliance",
+                            agent=node_name,
+                            data={
+                                "decisions": [
+                                    d.model_dump() for d in update["compliance_decisions"]
+                                ]
+                            },
+                        )
+                    )
                 if "actions" in update:
                     await publish_trace(
                         ev(
@@ -78,22 +91,30 @@ async def execute_run(req: RunRequest) -> RunState:
                             data={"actions": [a.model_dump() for a in update["actions"]]},
                         )
                     )
+                if update.get("final_response") is not None:
+                    await publish_trace(
+                        ev(
+                            "synthesis",
+                            agent=node_name,
+                            data=update["final_response"].model_dump(),
+                        )
+                    )
                 await publish_trace(ev("agent_finished", agent=node_name))
 
+        response = final_state.final_response
         await publish_trace(
             ev(
                 "final",
                 data={
                     "status": final_state.status,
                     "language": final_state.language,
-                    "intents": [i.model_dump() for i in final_state.intents],
-                    "entities": final_state.entities,
                     "route": final_state.route,
+                    "response": response.model_dump() if response else None,
                     "citations": [p.citation for p in final_state.retrieved],
-                    "actions": [a.model_dump() for a in final_state.actions],
                 },
             )
         )
+        await _persist(final_state)
     except Exception as e:  # noqa: BLE001 — never hard-crash a run
         log.error("run.error", run_id=req.run_id, error=str(e))
         await publish_trace(ev("error", data={"error": str(e)}))
@@ -102,3 +123,17 @@ async def execute_run(req: RunRequest) -> RunState:
         await publish_trace(ev("run_finished", data={"status": final_state.status}))
 
     return final_state
+
+
+async def _persist(state: RunState) -> None:
+    """Best-effort persistence of the run + audit chain. Never crashes a run (NFR-2)."""
+    from saral.config import get_settings
+
+    if get_settings().app_env == "test":
+        return
+    try:
+        from saral.db.repository import persist_run
+
+        await persist_run(state)
+    except Exception as e:  # noqa: BLE001
+        log.warning("run.persist_failed", run_id=state.run_id, error=str(e))

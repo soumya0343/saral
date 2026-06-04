@@ -7,14 +7,23 @@ decisions and the final response payload.
 
 from __future__ import annotations
 
-from typing import Any, Literal
+import operator
+from typing import Annotated, Any, Literal
 
 from pydantic import BaseModel, Field
 
-from saral.schemas import ActionRecord, Intent, Language, Passage
+from saral.schemas import (
+    ActionRecord,
+    ComplianceDecision,
+    HistoryTurn,
+    Intent,
+    Language,
+    Passage,
+    ResponsePayload,
+)
 
 RunStatus = Literal["in_progress", "resolved", "escalated", "degraded"]
-Route = Literal["rag", "action", "end"]
+Route = Literal["respond", "rag", "action", "mixed", "end"]
 
 
 class RunState(BaseModel):
@@ -22,6 +31,7 @@ class RunState(BaseModel):
     conversation_id: str
     user_id: str
     raw_message: str
+    history: list[HistoryTurn] = Field(default_factory=list)
 
     language: Language | None = None
     intents: list[Intent] = Field(default_factory=list)
@@ -29,7 +39,14 @@ class RunState(BaseModel):
 
     route: Route | None = None
     retrieved: list[Passage] = Field(default_factory=list)
+    compliance_decisions: list[ComplianceDecision] = Field(default_factory=list)
     actions: list[ActionRecord] = Field(default_factory=list)
+    final_response: ResponsePayload | None = None
 
     status: RunStatus = "in_progress"
-    step_count: int = 0
+    # Additive reducer so parallel branches (rag + action) can both increment in one step.
+    step_count: Annotated[int, operator.add] = 0
+
+    @property
+    def is_blocked(self) -> bool:
+        return any(d.decision in ("block", "escalate") for d in self.compliance_decisions)
