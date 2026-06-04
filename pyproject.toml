@@ -1,0 +1,67 @@
+[project]
+name = "saral"
+version = "0.1.0"
+description = "Saral — multilingual multi-agent customer-support resolution engine"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.34",
+    "pydantic>=2.10",
+    "pydantic-settings>=2.7",
+    "sqlalchemy[asyncio]>=2.0",
+    "asyncpg>=0.30",
+    "alembic>=1.14",
+    "redis>=5.2",
+    "httpx>=0.28",
+    "sse-starlette>=2.2",
+    "structlog>=24.4",
+    "anthropic>=0.42",
+    "langgraph>=0.2.60",
+    "langchain-core>=0.3",
+    "rank-bm25>=0.2.2",
+]
+
+[project.optional-dependencies]
+# Phase 3 — PII redaction (pulls spaCy; install when needed)
+pii = [
+    "presidio-analyzer>=2.2",
+    "presidio-anonymizer>=2.2",
+]
+# Phase 2 — local embeddings for offline/no-key dev
+embeddings = [
+    "sentence-transformers>=3.3",
+]
+
+[dependency-groups]
+dev = [
+    "ruff>=0.9",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.25",
+    "mypy>=1.14",
+    "respx>=0.22",
+]
+
+[tool.uv]
+package = false
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["backend"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "ASYNC", "C4", "SIM"]
+ignore = ["B008"]  # FastAPI Depends() in defaults
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+pythonpath = ["backend"]
+
+[tool.mypy]
+python_version = "3.12"
+plugins = ["pydantic.mypy"]
+mypy_path = "backend"
+ignore_missing_imports = true
+warn_unused_ignores = true
