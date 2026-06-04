@@ -22,6 +22,15 @@ _INJECTION_PATTERNS = [
     re.compile(r"pretend\s+(?:to\s+be|you\s+are)", re.I),
     re.compile(r"reveal\s+(?:the\s+)?(?:system\s+prompt|your\s+instructions)", re.I),
     re.compile(r"override\s+(?:the\s+)?(?:compliance|authoriz|rules)", re.I),
+    # Romanized-Hindi / Hinglish variants
+    re.compile(r"(?:saare?\s+)?(?:niyam|rules?)\s+(?:bhool|ignore|chhod)", re.I),
+    re.compile(r"(?:refund|loan|payout)\s+(?:ko\s+)?(?:approve|grant|de\s+do|kar\s*do)", re.I),
+    re.compile(r"ignore\s+kar(?:o|\s*do)", re.I),
+    re.compile(r"bypass\s+kar(?:o|\s*do)", re.I),
+    # Devanagari variants
+    re.compile(r"नियम\s*भूल"),
+    re.compile(r"(?:रिफंड|लोन)\s*(?:को\s*)?अप्रूव"),
+    re.compile(r"नियम\s*(?:को\s*)?(?:अनदेखा|नज़रअंदाज)"),
 ]
 
 

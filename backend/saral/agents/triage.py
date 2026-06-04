@@ -27,9 +27,11 @@ _HINGLISH_MARKERS = {
     "mujhe", "karna", "karni", "kaisa", "kaisi",
 }
 
-_CLAIM_STATUS = {
+# Claim-status is an action only when a claim ID is present or the phrasing is explicit —
+# a bare "claim" (e.g. "how do I file a claim?") is an information question, not an action.
+_CLAIM_STATUS_PHRASES = {
     "claim status", "claim ka status", "claim status kya", "status of my claim",
-    "क्लेम", "क्लेम का स्टेटस", "claim", "status",
+    "claim ki status",
 }
 _UPDATE_CONTACT = {
     "update number", "change number", "update mobile", "change mobile",
@@ -46,6 +48,8 @@ _INFORMATION = {
     "what does", "premium", "exclusion", "claim process", "how do i",
     "how to", "eligible", "kya cover", "policy", "faq", "deductible",
     "waiting period", "कवर", "पॉलिसी", "प्रीमियम",
+    "loan", "emi", "foreclosure", "tenure", "interest rate", "grace period",
+    "reinstate", "nominee", "statement", "miss",
 }
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
@@ -103,7 +107,11 @@ def classify_intents(text: str) -> list[Intent]:
         intents.append(Intent(type=IntentType.ACTION, action="update_contact", confidence=0.9))
     if _hits(lower, {k.lower() for k in _RAISE_TICKET}):
         intents.append(Intent(type=IntentType.ACTION, action="raise_ticket", confidence=0.85))
-    if _hits(lower, {k.lower() for k in _CLAIM_STATUS}):
+    has_claim_id = bool(_CLAIM_RE.search(text))
+    claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
+        "क्लेम" in text and "स्टेटस" in text
+    )
+    if has_claim_id or claim_phrase:
         intents.append(Intent(type=IntentType.ACTION, action="get_claim_status", confidence=0.8))
     if _hits(lower, {k.lower() for k in _INFORMATION}):
         intents.append(Intent(type=IntentType.INFORMATION, confidence=0.8))

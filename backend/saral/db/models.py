@@ -88,3 +88,13 @@ class AuditLog(Base, TimestampMixin):
     hash_self: Mapped[str] = mapped_column(String(64), nullable=False)
 
     __table_args__ = (Index("ix_audit_run_seq", "run_id", "seq", unique=True),)
+
+
+class EvalResult(Base, TimestampMixin):
+    __tablename__ = "eval_results"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    scenario_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
+    config_version: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    metrics: Mapped[dict] = mapped_column(JSONB, default=dict)
+    passed: Mapped[bool] = mapped_column(default=False)

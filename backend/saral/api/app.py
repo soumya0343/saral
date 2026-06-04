@@ -10,6 +10,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from saral import __version__
+from saral.api.eval_routes import router as eval_router
 from saral.api.middleware import RequestIDMiddleware
 from saral.api.routes import router
 from saral.config import get_settings
@@ -40,6 +41,7 @@ def create_app() -> FastAPI:
         return {"status": "ok", "env": settings.app_env, "version": __version__}
 
     app.include_router(router)
+    app.include_router(eval_router)
 
     log.info("app.created", env=settings.app_env)
     return app

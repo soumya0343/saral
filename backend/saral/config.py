@@ -53,6 +53,11 @@ class Settings(BaseSettings):
     # --- Compliance ---
     pii_backend: Literal["regex", "presidio"] = "regex"
 
+    # --- Evaluation ---
+    config_version: str = "v1"  # pin for prompt/config; bump to compare versions
+    scenarios_path: str = "data/scenarios/scenarios.yaml"
+    eval_reports_dir: str = "data/eval_reports"
+
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard
     tool_timeout_s: float = 10.0
