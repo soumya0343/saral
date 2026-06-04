@@ -5,7 +5,7 @@ Kept separate from the consume loop so it can be unit-tested without Redis Strea
 
 from __future__ import annotations
 
-from saral.graph.build import build_graph
+from saral.graph.build import build_checkpointed_graph
 from saral.graph.state import RunState
 from saral.logging import get_logger
 from saral.runbus import publish_trace
@@ -15,7 +15,8 @@ log = get_logger(__name__)
 
 
 async def execute_run(req: RunRequest) -> RunState:
-    graph = build_graph()
+    graph = build_checkpointed_graph()
+    config = {"configurable": {"thread_id": req.run_id}}
     init = RunState(
         run_id=req.run_id,
         conversation_id=req.conversation_id,
@@ -23,6 +24,11 @@ async def execute_run(req: RunRequest) -> RunState:
         raw_message=req.message,
         history=req.history,
     )
+    # Resume from a checkpoint if this run was interrupted mid-flight (worker crash).
+    snapshot = await graph.aget_state(config)
+    graph_input = None if getattr(snapshot, "next", None) else init
+    if graph_input is None:
+        log.info("run.resuming", run_id=req.run_id)
 
     def ev(type_, agent=None, data=None) -> TraceEvent:
         return TraceEvent(
@@ -37,7 +43,7 @@ async def execute_run(req: RunRequest) -> RunState:
 
     final_state = init
     try:
-        async for chunk in graph.astream(init, stream_mode="updates"):
+        async for chunk in graph.astream(graph_input, config, stream_mode="updates"):
             for node_name, update in chunk.items():
                 if update is None:
                     continue
@@ -100,6 +106,11 @@ async def execute_run(req: RunRequest) -> RunState:
                         )
                     )
                 await publish_trace(ev("agent_finished", agent=node_name))
+
+        # Authoritative final state from the checkpoint (correct even after a resume).
+        snap = await graph.aget_state(config)
+        if snap and snap.values:
+            final_state = RunState.model_validate(snap.values)
 
         response = final_state.final_response
         await publish_trace(

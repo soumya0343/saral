@@ -43,6 +43,9 @@ class RunState(BaseModel):
     actions: list[ActionRecord] = Field(default_factory=list)
     final_response: ResponsePayload | None = None
 
+    # Specialists that failed; the run continues in degraded mode (TRD §15).
+    degraded_agents: Annotated[list[str], operator.add] = Field(default_factory=list)
+
     status: RunStatus = "in_progress"
     # Additive reducer so parallel branches (rag + action) can both increment in one step.
     step_count: Annotated[int, operator.add] = 0

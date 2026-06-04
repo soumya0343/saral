@@ -63,6 +63,12 @@ class Settings(BaseSettings):
     tool_timeout_s: float = 10.0
     conversation_memory_turns: int = 8
 
+    # --- Reliability (Phase 5) ---
+    llm_retry_cap: int = 2  # retries per provider on structured/parse error before fallback
+    checkpoint_backend: Literal["memory", "postgres"] = "memory"
+    claim_min_idle_ms: int = 30000  # XAUTOCLAIM: reclaim pending entries idle longer than this
+    reclaim_batch: int = 10
+
     @property
     def provider_chain(self) -> list[str]:
         return [p.strip() for p in self.llm_provider_order.split(",") if p.strip()]

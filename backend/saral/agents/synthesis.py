@@ -31,6 +31,7 @@ class SynthesisContext(BaseModel):
     passages: list[Passage] = Field(default_factory=list)
     actions: list[ActionRecord] = Field(default_factory=list)
     decisions: list[ComplianceDecision] = Field(default_factory=list)
+    degraded: list[str] = Field(default_factory=list)
 
 
 # --- Language-specific templates (stub composer) ---
@@ -109,9 +110,19 @@ def compose(ctx: SynthesisContext) -> ResponsePayload:
         template = _SOURCED.get(lang, _SOURCED[Language.EN])
         parts.append(template.format(cite=top.citation, answer=answer))
 
+    if ctx.degraded:
+        parts.append(
+            "(Some information is temporarily unavailable; a human agent will follow up.)"
+        )
+
     message = " ".join(p for p in parts if p) or "How can I help with your policy or account?"
+    status = "resolved"
+    if escalated:
+        status = "escalated"
+    elif ctx.degraded:
+        status = "degraded"
     return ResponsePayload(
-        resolution_status="escalated" if escalated else "resolved",
+        resolution_status=status,
         message=message,
         actions_taken=actions_taken,
         citations=citations,

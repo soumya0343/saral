@@ -52,15 +52,25 @@ class FallbackLLM:
 
     async def _run(self, method: str, *args, **kwargs):
         last_err: Exception | None = None
+        retries = get_settings().llm_retry_cap
         for provider in self.providers:
             if not provider.available:
                 continue
-            try:
-                return await getattr(provider, method)(*args, **kwargs)
-            except LLMError as e:
-                last_err = e
-                log.warning("llm.fallback", provider=provider.name, method=method, error=str(e))
-                continue
+            # Retry the same provider a few times (handles malformed/parse errors via
+            # re-prompt) before falling through to the next provider.
+            for attempt in range(retries + 1):
+                try:
+                    return await getattr(provider, method)(*args, **kwargs)
+                except LLMError as e:
+                    last_err = e
+                    log.warning(
+                        "llm.retry" if attempt < retries else "llm.fallback",
+                        provider=provider.name,
+                        method=method,
+                        attempt=attempt,
+                        error=str(e),
+                    )
+                    continue
         raise LLMError(f"all providers failed for {method}: {last_err}")
 
 

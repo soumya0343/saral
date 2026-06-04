@@ -31,7 +31,10 @@ from saral.compliance.gate import ComplianceGate
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.graph.state import RunState
+from saral.logging import get_logger
 from saral.schemas import IntentType, Language
+
+log = get_logger(__name__)
 
 _triage = TriageAgent()
 _rag = RagAgent()
@@ -77,8 +80,13 @@ async def supervisor_node(state: RunState) -> dict:
 
 
 async def rag_node(state: RunState) -> dict:
-    passages = await _rag.run(state.raw_message)
-    return {"retrieved": passages, "step_count": 1}
+    # Partial-failure isolation (TRD §15): a specialist failure degrades, never crashes.
+    try:
+        passages = await _rag.run(state.raw_message)
+        return {"retrieved": passages, "step_count": 1}
+    except Exception as e:  # noqa: BLE001
+        log.error("node.failed", node="rag", run_id=state.run_id, error=str(e))
+        return {"degraded_agents": ["rag"], "step_count": 1}
 
 
 async def compliance_node(state: RunState) -> dict:
@@ -89,10 +97,14 @@ async def compliance_node(state: RunState) -> dict:
 async def action_node(state: RunState) -> dict:
     allowed = ComplianceGate.allowed_actions(state.compliance_decisions)
     permitted = [i for i in state.intents if i.action in allowed]
-    records = await _action.run(
-        permitted, state.entities, state.user_id, state.run_id, state.raw_message
-    )
-    return {"actions": records, "step_count": 1}
+    try:
+        records = await _action.run(
+            permitted, state.entities, state.user_id, state.run_id, state.raw_message
+        )
+        return {"actions": records, "step_count": 1}
+    except Exception as e:  # noqa: BLE001
+        log.error("node.failed", node="action", run_id=state.run_id, error=str(e))
+        return {"degraded_agents": ["action"], "step_count": 1}
 
 
 async def synthesis_node(state: RunState) -> dict:
@@ -102,11 +114,16 @@ async def synthesis_node(state: RunState) -> dict:
         passages=state.retrieved,
         actions=state.actions,
         decisions=state.compliance_decisions,
+        degraded=state.degraded_agents,
     )
     response = await _synth.run(ctx)
     # Pre-send gate: redact any PII in the outbound message.
     response.message = redact_pii(response.message)
     status = _STATUS_FROM_RESOLUTION.get(response.resolution_status, "resolved")
+    # A specialist failure degrades the run unless it was already blocked/escalated.
+    if state.degraded_agents and status == "resolved":
+        status = "degraded"
+        response.resolution_status = "degraded"
     return {"final_response": response, "status": status, "step_count": 1}
 
 
@@ -127,8 +144,7 @@ def _branch(state: RunState):
     return "synthesis"  # respond / end
 
 
-@lru_cache
-def build_graph():
+def _assemble() -> StateGraph:
     g = StateGraph(RunState)
     g.add_node("triage", triage_node)
     g.add_node("compliance", compliance_node)
@@ -148,4 +164,18 @@ def build_graph():
     g.add_edge("rag", "synthesis")
     g.add_edge("action", "synthesis")
     g.add_edge("synthesis", END)
-    return g.compile()
+    return g
+
+
+@lru_cache
+def build_graph():
+    """Compiled graph without a checkpointer — used by eval and tests."""
+    return _assemble().compile()
+
+
+@lru_cache
+def build_checkpointed_graph():
+    """Compiled graph with a checkpointer so crashed runs resume (worker path)."""
+    from saral.graph.checkpoint import get_checkpointer
+
+    return _assemble().compile(checkpointer=get_checkpointer())

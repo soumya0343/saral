@@ -37,4 +37,4 @@ migrate: ## Apply DB migrations (Phase 1+)
 	uv run alembic upgrade head
 
 eval: ## Run eval suite (Phase 4+)
-	uv run python -m saral.eval.runner
+	PYTHONPATH=backend uv run python -m saral.eval.runner
