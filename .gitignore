@@ -35,3 +35,5 @@ data/eval_reports/
 
 # Claude
 .claude/
+.agents/
+skills-lock.json
