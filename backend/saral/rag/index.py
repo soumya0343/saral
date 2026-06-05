@@ -106,6 +106,28 @@ def get_index() -> HybridIndex:
     return HybridIndex(get_settings().corpus_dir)
 
 
-def search_knowledge(query: str, top_k: int | None = None) -> list[Passage]:
-    """Tool entrypoint (TRD §14): hybrid semantic + keyword retrieval with citations."""
-    return get_index().search(query, top_k=top_k)
+def search_knowledge(
+    query: str,
+    top_k: int | None = None,
+    user_id: str | None = None,
+    allowed_domains: list[str] | None = None,
+) -> list[Passage]:
+    """Tool entrypoint (TRD §14): hybrid semantic + keyword retrieval with citations.
+
+    Merges the GENERIC corpus (unscoped) with the customer's PER-CUSTOMER documents, the latter
+    hard-filtered by the verified `user_id` ∧ `allowed_domains` (FR-16). The per-customer index
+    is a no-op when no customer data is loaded, so the generic path is unaffected.
+    """
+    generic = get_index().search(query, top_k=top_k)
+
+    if not user_id:
+        return generic
+    from saral.rag.customer_index import search_customer
+
+    personal = search_customer(query, user_id, allowed_domains, top_k=top_k)
+    if not personal:
+        return generic
+    # Per-customer citations lead (they prove the differentiator), then generic context.
+    merged = personal + [p for p in generic if p.doc_id not in {pp.doc_id for pp in personal}]
+    k = top_k or get_settings().retrieval_top_k
+    return merged[: max(k, len(personal))]

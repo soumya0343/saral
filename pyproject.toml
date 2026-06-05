@@ -21,6 +21,8 @@ dependencies = [
     "langchain-core>=0.3",
     "rank-bm25>=0.2.2",
     "psycopg[binary]>=3.3.4",
+    "pyjwt>=2.10",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

@@ -33,6 +33,13 @@ class Scenario(BaseModel):
     expected: Expected = Field(default_factory=Expected)
     xling_group: str | None = None  # cross-lingual triple id
     human_label: bool | None = None  # human pass/fail for judge validation
+    # Starting auth level for the run (token-derived). Writes start at "session" and gate up.
+    auth_level: str = "session"
+    # Drive a suspended write through step-up + confirmation to completion (a verified,
+    # confirming customer). Set false to assert the suspend itself (expected.status awaiting_*).
+    complete_stepup: bool = True
+    # The cited clause must match THIS customer's own variant (explanation-groundedness, FR-16).
+    expects_personal_citation: bool = False
 
 
 class JudgeVerdict(BaseModel):
@@ -63,12 +70,15 @@ class MetricSummary(BaseModel):
     tool_sequence_correctness: float
     compliance_block_rate: float
     groundedness: float
+    explanation_groundedness: float = 1.0
     resolution_accuracy: float
     cross_lingual_consistency: float
     latency_p50_ms: float
     latency_p95_ms: float
     cost_per_run_usd: float
     judge_human_agreement: float | None = None
+    # Judge-vs-human agreement broken out per language (TRD §18.2); floor gates the metric.
+    judge_agreement_by_language: dict[str, float] = Field(default_factory=dict)
 
 
 class EvalReport(BaseModel):

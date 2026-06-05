@@ -14,6 +14,21 @@ class Language(StrEnum):
     HINGLISH = "hinglish"
 
 
+class AuthLevel(StrEnum):
+    """Verification tier derived from the customer's token (TRD §11.5, CONTEXT 'Auth level').
+
+    Ordered: a read action needs >= SESSION; a state-changing action needs STEP_UP.
+    """
+
+    UNVERIFIED = "unverified"  # no valid token
+    SESSION = "session"  # valid token — read actions ok
+    STEP_UP = "step_up"  # OTP/known-datum verified — writes ok
+
+    @property
+    def rank(self) -> int:
+        return {"unverified": 0, "session": 1, "step_up": 2}[self.value]
+
+
 class IntentType(StrEnum):
     """Coarse intent classes that drive supervisor routing (Phase 2)."""
 
@@ -59,10 +74,16 @@ class Passage(BaseModel):
     chunk_id: int
     text: str
     score: float = 0.0
+    scope: Literal["generic", "customer"] = "generic"  # generic corpus vs per-customer doc
+    domain: str | None = None  # data domain (per-customer only)
 
     @property
     def citation(self) -> str:
         return f"{self.doc_id}#{self.chunk_id}"
+
+    @property
+    def is_personal(self) -> bool:
+        return self.scope == "customer"
 
 
 # --- Account actions ---
@@ -90,9 +111,43 @@ class ComplianceDecision(BaseModel):
     action: str | None = None  # the action being gated, if any
 
 
+# --- Write confirmation + identifiers (TRD §12.5.1, §13.4) ---
+
+
+class PendingWrite(BaseModel):
+    """A state-changing action read back, awaiting the customer's confirmation.
+
+    Its execution authority is mortal (CONTEXT 'Pending write'): a stale pending write never
+    auto-fires — resume re-earns step-up + confirm. The idempotency key is conversation-anchored
+    (not run-anchored) so a crash-resume re-uses the same key (TRD §13.4, §15).
+    """
+
+    tool: str
+    field: str | None = None
+    value: str | None = None
+    args: dict[str, Any] = Field(default_factory=dict)
+    read_back: str  # human-facing "Update X to Y — confirm? (yes/no)"
+    idempotency_key: str
+    intent_nonce: int
+
+
+# --- Escalation / human handoff (TRD §12.7) ---
+
+
+class EscalationRecord(BaseModel):
+    conversation_id: str
+    tenant_id: str
+    detected_intent: str
+    attempted_actions: list[str] = Field(default_factory=list)
+    blocking_reason: str
+    transcript_ref: str
+    pending_action: str | None = None
+    sla_target: str  # e.g. "4h"
+
+
 # --- Final response (Synthesis output schema, TRD §12.6) ---
 
-ResolutionStatus = Literal["resolved", "escalated", "blocked", "degraded"]
+ResolutionStatus = Literal["resolved", "escalated", "blocked", "degraded", "awaiting"]
 
 
 class ResponsePayload(BaseModel):
@@ -140,8 +195,16 @@ class HistoryTurn(BaseModel):
 class RunRequest(BaseModel):
     run_id: str
     conversation_id: str
-    user_id: str
+    user_id: str  # token-derived only (TRD §11.5); never read from the message body
+    tenant_id: str = "t_demo"
+    auth_level: AuthLevel = AuthLevel.SESSION  # derived from the validated session token
     message: str
     history: list[HistoryTurn] = Field(default_factory=list)  # short-term memory (last N turns)
     # Customer's own ids (policy_id/claim_id) so "my claim status" resolves without an ID.
     known_entities: dict[str, Any] = Field(default_factory=dict)
+    # Resume of a suspended run: the customer's reply to a confirmation / clarification.
+    resume_reply: str | None = None
+    pending_write: PendingWrite | None = None
+    # Step-up challenge echoed back by the customer (the OTP), validated on resume.
+    challenge_id: str | None = None
+    challenge_response: str | None = None

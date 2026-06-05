@@ -25,12 +25,14 @@ async def test_information_query_routes_to_rag():
     assert not state.actions
 
 
-async def test_action_query_routes_to_action():
+async def test_write_action_suspends_for_stepup():
+    # A state-changing action at session level must gate on step-up, not execute (FR-14).
     state = await _run("Please update my mobile number to 9000000000")
-    assert state.route == "action"
-    assert state.actions
-    assert state.actions[0].tool == "update_contact"
-    assert not state.retrieved
+    assert state.route == "suspend"
+    assert state.status == "awaiting_input"
+    assert state.pending_write is not None
+    assert state.pending_write.tool == "update_contact"
+    assert not state.actions  # nothing executed before step-up
 
 
 async def test_claim_status_routes_to_action_with_entity():

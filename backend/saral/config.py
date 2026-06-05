@@ -52,8 +52,19 @@ class Settings(BaseSettings):
 
     # --- Retrieval ---
     corpus_dir: str = "data/policy_corpus"
+    customers_dir: str = "data/customers"  # per-customer document-fidelity docs (FR-16)
     embedder: Literal["hashing", "sentence-transformer"] = "hashing"
     retrieval_top_k: int = 4
+    retrieval_score_floor: float = 0.0  # below this, treat as ungrounded -> escalate (FR-18)
+
+    # --- Identity & Auth (TRD §11.5) ---
+    # Mock IdP signing secret (HS256). Dev default is insecure on purpose; set in prod.
+    session_secret: str = "dev-insecure-change-me-0000000000000000"  # >=32 bytes (HS256)
+    session_ttl_min: int = 30  # short-TTL session token
+    step_up_ttl_s: int = 300  # OTP challenge validity window
+    default_tenant: str = "t_demo"  # single hardcoded tenant (multi-tenant-ready schema)
+    # Expose the generated OTP in API responses (non-prod only) since there is no SMS channel.
+    expose_test_otp: bool = True
 
     # --- Compliance ---
     pii_backend: Literal["regex", "presidio"] = "regex"

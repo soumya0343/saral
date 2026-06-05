@@ -1,8 +1,9 @@
 """Typed shared state flowing through the agent graph (TRD §13.1).
 
-Phase 1 populated language / intents / entities via triage. Phase 2 adds retrieved
-passages and account-action records, plus a routing decision. Later phases add compliance
-decisions and the final response payload.
+Two orthogonal axes (TRD §13.4): `auth_level` (token-derived) × `status` (lifecycle, with
+suspend states `awaiting_input` / `awaiting_confirmation`). No state-changing tool fires
+without a fresh token re-validation in the same transition — suspension never carries
+execution authority forward.
 """
 
 from __future__ import annotations
@@ -14,22 +15,34 @@ from pydantic import BaseModel, Field
 
 from saral.schemas import (
     ActionRecord,
+    AuthLevel,
     ComplianceDecision,
+    EscalationRecord,
     HistoryTurn,
     Intent,
     Language,
     Passage,
+    PendingWrite,
     ResponsePayload,
 )
 
-RunStatus = Literal["in_progress", "resolved", "escalated", "degraded"]
-Route = Literal["respond", "rag", "action", "mixed", "end"]
+RunStatus = Literal[
+    "in_progress",
+    "awaiting_input",  # clarification — soft signal, expects a customer reply (CONTEXT)
+    "awaiting_confirmation",  # write read-back — expects yes/no
+    "resolved",
+    "escalated",
+    "degraded",
+]
+Route = Literal["respond", "rag", "action", "mixed", "suspend", "end"]
 
 
 class RunState(BaseModel):
     run_id: str = ""
     conversation_id: str
-    user_id: str
+    tenant_id: str = "t_demo"
+    user_id: str  # token-derived only (TRD §11.5)
+    auth_level: AuthLevel = AuthLevel.SESSION
     raw_message: str
     history: list[HistoryTurn] = Field(default_factory=list)
     known_entities: dict[str, Any] = Field(default_factory=dict)
@@ -37,12 +50,23 @@ class RunState(BaseModel):
     language: Language | None = None
     intents: list[Intent] = Field(default_factory=list)
     entities: dict[str, Any] = Field(default_factory=dict)
+    allowed_domains: list[str] = Field(default_factory=list)  # intent→domain map output
 
     route: Route | None = None
     retrieved: list[Passage] = Field(default_factory=list)
     compliance_decisions: list[ComplianceDecision] = Field(default_factory=list)
     actions: list[ActionRecord] = Field(default_factory=list)
     final_response: ResponsePayload | None = None
+    escalation: EscalationRecord | None = None
+
+    # --- write-confirmation + step-up (TRD §12.5.1, §13.4) ---
+    pending_write: PendingWrite | None = None
+    intent_nonce: int = 0  # server-incremented; never from the message body
+    step_up_owed: bool = False
+    challenge_id: str | None = None  # surfaced to the customer when step-up is requested
+    # Resume inputs (set on a confirmation/clarification reply; see /conversations/{id}/reply):
+    resume_reply: str | None = None
+    challenge_response: str | None = None
 
     # Specialists that failed; the run continues in degraded mode (TRD §15).
     degraded_agents: Annotated[list[str], operator.add] = Field(default_factory=list)

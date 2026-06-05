@@ -79,6 +79,17 @@ class MMeta(MockBase):
     n: Mapped[int] = mapped_column(Integer)
 
 
+class MChallenge(MockBase):
+    """Step-up OTP challenge (TRD §11.5). Synthetic: code returned in non-prod, no SMS."""
+
+    __tablename__ = "mock_challenges"
+    challenge_id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    code: Mapped[str] = mapped_column(String(8))
+    expires_epoch: Mapped[int] = mapped_column(Integer)
+    used: Mapped[int] = mapped_column(Integer, default=0)
+
+
 # --- Seed data (pre-existing customers for cross-user / authorization demos) ---
 
 _SEED_USERS = [
@@ -158,10 +169,43 @@ class Store:
     def reset(self) -> None:
         """Test helper: wipe + reseed."""
         with Session(self.engine) as s:
-            for model in (MIdem, MTicket, MClaim, MPolicy, MUser, MMeta):
+            for model in (MChallenge, MIdem, MTicket, MClaim, MPolicy, MUser, MMeta):
                 s.query(model).delete()
             s.commit()
         self.seed()
+
+    # --- step-up challenges (TRD §11.5) ---
+    def create_challenge(self, user_id: str, code: str, ttl_s: int) -> str:
+        import time
+
+        challenge_id = f"chl_{user_id}_{int(time.time() * 1000)}"
+        with Session(self.engine) as s:
+            s.add(
+                MChallenge(
+                    challenge_id=challenge_id,
+                    user_id=user_id,
+                    code=code,
+                    expires_epoch=int(time.time()) + ttl_s,
+                )
+            )
+            s.commit()
+        return challenge_id
+
+    def verify_challenge(self, challenge_id: str, response: str, user_id: str) -> bool:
+        """Single-use, TTL-bounded, ownership-bound. Returns True only on an exact match."""
+        import time
+
+        with Session(self.engine) as s:
+            ch = s.get(MChallenge, challenge_id)
+            if ch is None or ch.used or ch.user_id != user_id:
+                return False
+            if int(time.time()) > ch.expires_epoch:
+                return False
+            if (response or "").strip() != ch.code:
+                return False
+            ch.used = 1  # single-use: burn the challenge on success
+            s.commit()
+            return True
 
     def _next_id(self, s: Session) -> int:
         meta = s.get(MMeta, "id_seq")

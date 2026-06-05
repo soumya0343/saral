@@ -21,6 +21,7 @@ from saral.eval.store import latest_report, write_report
 from saral.graph.build import build_graph
 from saral.graph.state import RunState
 from saral.logging import get_logger
+from saral.schemas import AuthLevel
 
 log = get_logger(__name__)
 
@@ -42,10 +43,31 @@ async def _run_one(scenario: Scenario, judge: Judge) -> ScenarioResult:
         run_id=f"eval-{scenario.id}",
         conversation_id=f"eval-{scenario.id}",
         user_id=scenario.user_id,
+        auth_level=AuthLevel(scenario.auth_level),
         raw_message=scenario.message,
     )
     t0 = time.perf_counter()
     state = RunState.model_validate(await graph.ainvoke(init))
+
+    # Drive a suspended write through step-up + confirmation (a verified, confirming customer),
+    # so the eval measures the full resolution path and tool sequence (FR-14/15/19).
+    if (
+        scenario.complete_stepup
+        and state.pending_write is not None
+        and state.status in ("awaiting_input", "awaiting_confirmation")
+    ):
+        resume = RunState(
+            run_id=f"eval-{scenario.id}-confirm",
+            conversation_id=f"eval-{scenario.id}",
+            user_id=scenario.user_id,
+            auth_level=AuthLevel.STEP_UP,  # the verified customer
+            raw_message=scenario.message,
+            pending_write=state.pending_write,
+            intent_nonce=state.pending_write.intent_nonce,
+            resume_reply="yes",
+        )
+        state = RunState.model_validate(await graph.ainvoke(resume))
+
     latency_ms = int((time.perf_counter() - t0) * 1000)
 
     verdict = await judge.evaluate(
