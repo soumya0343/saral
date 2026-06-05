@@ -54,6 +54,10 @@ _INFORMATION = {
     "waiting period", "कवर", "पॉलिसी", "प्रीमियम",
     "loan", "emi", "foreclosure", "tenure", "interest rate", "grace period",
     "reinstate", "nominee", "statement", "miss",
+    # Explanation / adjudication questions about the customer's own claim — the differentiator.
+    "why was", "why is", "why did", "rejected", "reject", "reduced", "partial",
+    "partially", "deduction", "co-pay", "copay", "clause", "rider", "lapse", "lapsed",
+    "क्यों", "अस्वीकृत", "खंड", "लैप्स", "kyun", "kyu", "reject kyun",
 }
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}

@@ -10,6 +10,7 @@ thread + timeout), so this uses a sync engine.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -164,7 +165,58 @@ class Store:
                             note=note,
                         )
                     )
+            self._seed_from_manifest(s)
             s.commit()
+
+    def _seed_from_manifest(self, s: Session) -> None:
+        """Seed hero + thin customers from data/customers/manifest.yaml (additive, skip-if-exists).
+
+        Keeps the structured store consistent with the per-customer documents the RAG index cites.
+        """
+        import yaml
+
+        from saral.config import get_settings
+
+        path = Path(get_settings().customers_dir) / "manifest.yaml"
+        if not path.exists():
+            return
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for cust in data.get("customers", []):
+            cid = cust["customer_id"]
+            if s.get(MUser, cid) is None:
+                s.add(
+                    MUser(
+                        id=cid,
+                        name=cust.get("name", cid),
+                        mobile=cust.get("registered_mobile"),
+                        email=cust.get("registered_email"),
+                    )
+                )
+            for p in cust.get("policies", []):
+                if s.get(MPolicy, p["policy_id"]) is None:
+                    s.add(
+                        MPolicy(
+                            policy_id=p["policy_id"],
+                            holder_user_id=cid,
+                            product=p.get("product", "health"),
+                            status=p.get("status", "active"),
+                            premium_inr=p.get("premium_inr", 0),
+                            sum_assured_inr=p.get("sum_assured_inr", 0),
+                            renewal_date=p.get("renewal_date", ""),
+                        )
+                    )
+            for c in cust.get("claims", []):
+                if s.get(MClaim, c["claim_id"]) is None:
+                    s.add(
+                        MClaim(
+                            claim_id=c["claim_id"],
+                            policy_id=c["policy_id"],
+                            status=c.get("status", "under_review"),
+                            amount_inr=c.get("amount_inr"),
+                            last_updated=c.get("last_updated", ""),
+                            note=c.get("note"),
+                        )
+                    )
 
     def reset(self) -> None:
         """Test helper: wipe + reseed."""

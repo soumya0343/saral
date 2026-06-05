@@ -1,0 +1,83 @@
+# Per-customer dataset manifest (TRD §12.3, FR-16) — the differentiator.
+#
+# Hero customers carry full document-fidelity records (policy schedules with numbered clauses,
+# rider variants, claim adjudication notes citing those clauses) across the five data domains.
+# Thin customers are structured rows only (statistical N + leak tests). The structured rows
+# here are internally consistent with each hero's authored documents (same clause refs, amounts,
+# statuses) — that consistency is the whole point. All rows carry tenant_id (single tenant today).
+#
+# The mock core-system store seeds users/policies/claims from this file (additive, skip-if-exists);
+# the per-customer RAG index loads each hero's `documents` and hard-filters by customer_id ∧ domain.
+
+customers:
+  # ── HERO 1 — English, health, partial-claim explanation-groundedness (Clause 4.1/4.2) ──
+  - customer_id: U1001
+    tenant_id: t_demo
+    is_hero: true
+    name: Asha Verma
+    dob: "1988-04-12"
+    registered_mobile: "9876500001"
+    registered_email: asha@example.com
+    policies:
+      - {policy_id: POL1001, product: health, status: active, premium_inr: 14500, sum_assured_inr: 500000, renewal_date: "2026-11-01"}
+    claims:
+      - {claim_id: CLM2010, policy_id: POL1001, status: partially_approved, amount_inr: 32400, last_updated: "2026-05-20", clause_ref: "4.1, 4.2", note: "Partial settlement; proportionate deduction under Clause 4.1 + 10% co-pay under Clause 4.2."}
+    billing:
+      - {due_date: "2025-11-01", amount_inr: 14500, paid: true}
+      - {due_date: "2026-11-01", amount_inr: 14500, paid: false}
+    documents:
+      - {path: data/customers/U1001/policy_schedule.md, domain: policy_coverage, title: "Asha Verma — Arogya Secure Health Policy Schedule", language: en}
+      - {path: data/customers/U1001/claims/CLM2010.md, domain: claims, title: "Claim CLM2010 adjudication note", language: en}
+      - {path: data/customers/U1001/correspondence.md, domain: interaction_history, title: "Asha Verma — support history", language: en}
+
+  # ── HERO 2 — Hindi, term life, claim REJECTED because policy lapsed (Clause 6.2 grace) ──
+  - customer_id: U1003
+    tenant_id: t_demo
+    is_hero: true
+    name: Meena Kumari
+    dob: "1979-09-30"
+    registered_mobile: "9876500003"
+    registered_email: meena@example.com
+    policies:
+      - {policy_id: POL1003, product: term_life, status: lapsed, premium_inr: 22000, sum_assured_inr: 5000000, renewal_date: "2026-02-01"}
+    claims:
+      - {claim_id: CLM2030, policy_id: POL1003, status: rejected, amount_inr: 0, last_updated: "2026-05-12", clause_ref: "6.2", note: "Claim rejected — policy lapsed for non-payment beyond the grace period (Clause 6.2)."}
+    billing:
+      - {due_date: "2025-11-01", amount_inr: 22000, paid: false}
+    documents:
+      - {path: data/customers/U1003/policy_schedule.md, domain: policy_coverage, title: "मीना कुमारी — सुरक्षा टर्म लाइफ पॉलिसी अनुसूची", language: hi}
+      - {path: data/customers/U1003/claims/CLM2030.md, domain: claims, title: "क्लेम CLM2030 निर्णय टिप्पणी", language: hi}
+      - {path: data/customers/U1003/correspondence.md, domain: interaction_history, title: "मीना कुमारी — संपर्क इतिहास", language: hi}
+
+  # ── HERO 3 — Hindi, health floater, claim REJECTED under Critical Illness rider Clause R1.3 ──
+  - customer_id: U1010
+    tenant_id: t_demo
+    is_hero: true
+    name: Ramesh Iyer
+    dob: "1985-01-22"
+    registered_mobile: "9876500010"
+    registered_email: ramesh@example.com
+    policies:
+      - {policy_id: POL1010, product: health, status: active, premium_inr: 19800, sum_assured_inr: 1000000, renewal_date: "2026-09-15"}
+    claims:
+      - {claim_id: CLM2050, policy_id: POL1010, status: rejected, amount_inr: 0, last_updated: "2026-05-25", clause_ref: "R1.3", note: "Critical Illness rider claim rejected — Type-2 diabetes is not a listed critical illness under rider Clause R1.3."}
+    billing:
+      - {due_date: "2026-09-15", amount_inr: 19800, paid: true}
+    documents:
+      - {path: data/customers/U1010/policy_schedule.md, domain: policy_coverage, title: "रमेश अय्यर — फैमिली फ्लोटर हेल्थ पॉलिसी अनुसूची", language: hi}
+      - {path: data/customers/U1010/claims/CLM2050.md, domain: claims, title: "क्लेम CLM2050 निर्णय टिप्पणी", language: hi}
+      - {path: data/customers/U1010/correspondence.md, domain: interaction_history, title: "रमेश अय्यर — संपर्क इतिहास", language: hi}
+
+  # ── THIN customers — structured rows only (statistical N + cross-customer leak tests) ──
+  - {customer_id: U1002, tenant_id: t_demo, is_hero: false, name: Rahul Singh, dob: "1990-06-18", registered_mobile: "9876500002", registered_email: rahul@example.com, policies: [{policy_id: POL1002, product: motor, status: active, premium_inr: 8200, sum_assured_inr: 300000, renewal_date: "2026-08-15"}], claims: [{claim_id: CLM2002, policy_id: POL1002, status: approved, amount_inr: 18000, last_updated: "2026-05-30", note: "Approved; disbursal in 3-5 working days."}]}
+  - {customer_id: U1020, tenant_id: t_demo, is_hero: false, name: Priya Nair, policies: [{policy_id: POL1020, product: health, status: active, premium_inr: 12000, sum_assured_inr: 400000, renewal_date: "2026-12-01"}], claims: []}
+  - {customer_id: U1021, tenant_id: t_demo, is_hero: false, name: Arjun Mehta, policies: [{policy_id: POL1021, product: motor, status: active, premium_inr: 7600, sum_assured_inr: 250000, renewal_date: "2026-07-20"}], claims: []}
+  - {customer_id: U1022, tenant_id: t_demo, is_hero: false, name: Sneha Rao, policies: [{policy_id: POL1022, product: health, status: lapsed, premium_inr: 15500, sum_assured_inr: 600000, renewal_date: "2026-03-10"}], claims: []}
+  - {customer_id: U1023, tenant_id: t_demo, is_hero: false, name: Vikram Desai, policies: [{policy_id: POL1023, product: personal_loan, status: active, premium_inr: 0, sum_assured_inr: 0, renewal_date: "2027-01-01"}], claims: []}
+  - {customer_id: U1024, tenant_id: t_demo, is_hero: false, name: Kavya Pillai, policies: [{policy_id: POL1024, product: health, status: active, premium_inr: 13200, sum_assured_inr: 450000, renewal_date: "2026-10-05"}], claims: []}
+  - {customer_id: U1025, tenant_id: t_demo, is_hero: false, name: Anil Kapoor, policies: [{policy_id: POL1025, product: term_life, status: active, premium_inr: 26000, sum_assured_inr: 7500000, renewal_date: "2026-11-30"}], claims: []}
+  - {customer_id: U1026, tenant_id: t_demo, is_hero: false, name: Divya Shetty, policies: [{policy_id: POL1026, product: motor, status: active, premium_inr: 9100, sum_assured_inr: 350000, renewal_date: "2026-06-25"}], claims: []}
+  - {customer_id: U1027, tenant_id: t_demo, is_hero: false, name: Sanjay Gupta, policies: [{policy_id: POL1027, product: health, status: active, premium_inr: 17800, sum_assured_inr: 800000, renewal_date: "2026-09-01"}], claims: []}
+  - {customer_id: U1028, tenant_id: t_demo, is_hero: false, name: Pooja Reddy, policies: [{policy_id: POL1028, product: health, status: active, premium_inr: 11500, sum_assured_inr: 400000, renewal_date: "2026-12-12"}], claims: []}
+  - {customer_id: U1029, tenant_id: t_demo, is_hero: false, name: Manish Jain, policies: [{policy_id: POL1029, product: personal_loan, status: active, premium_inr: 0, sum_assured_inr: 0, renewal_date: "2027-02-01"}], claims: []}
+  - {customer_id: U1030, tenant_id: t_demo, is_hero: false, name: Neha Verma, policies: [{policy_id: POL1030, product: motor, status: lapsed, premium_inr: 6800, sum_assured_inr: 200000, renewal_date: "2026-01-15"}], claims: []}
