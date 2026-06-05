@@ -15,4 +15,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 COPY backend ./backend
 
+# The worker builds the RAG index (generic + per-customer) and runs eval scenarios from data/.
+COPY data ./data
+
 CMD ["python", "-m", "saral.worker.main"]
