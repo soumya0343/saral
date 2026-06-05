@@ -6,9 +6,11 @@ built with `compliance.audit` so a tamper attempt is detectable via `verify_chai
 
 from __future__ import annotations
 
+from sqlalchemy import func, select
+
 from saral.compliance import audit
 from saral.compliance.pii import redact_pii
-from saral.db.models import ActionRecordRow, AgentRun, AuditLog
+from saral.db.models import ActionRecordRow, AgentRun, AuditLog, Message
 from saral.db.session import get_sessionmaker
 from saral.graph.state import RunState
 
@@ -58,6 +60,24 @@ async def persist_run(state: RunState) -> None:
                     actor=e.actor,
                     hash_prev=e.hash_prev,
                     hash_self=e.hash_self,
+                )
+            )
+
+        # Persist the assistant reply so the conversation transcript is complete end-to-end.
+        if state.final_response and state.final_response.message:
+            next_seq = (
+                await session.scalar(
+                    select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
+                        Message.conversation_id == state.conversation_id
+                    )
+                )
+            ) or 1
+            session.add(
+                Message(
+                    conversation_id=state.conversation_id,
+                    role="assistant",
+                    content=redact_pii(state.final_response.message),
+                    sequence_num=next_seq,
                 )
             )
         await session.commit()

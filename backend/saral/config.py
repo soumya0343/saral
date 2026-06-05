@@ -31,6 +31,8 @@ class Settings(BaseSettings):
         description="Async SQLAlchemy (asyncpg) DSN.",
     )
     redis_url: str = "redis://localhost:6379/0"
+    # Mock core-system store: "postgres" (durable, live) or "memory" (in-proc SQLite, tests).
+    store_backend: Literal["memory", "postgres"] = "memory"
 
     # --- Redis Streams run bus ---
     run_stream: str = "agent-runs"

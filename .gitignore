@@ -32,3 +32,6 @@ data/eval_reports/
 *.swp
 .idea/
 .vscode/
+
+# Claude
+.claude/

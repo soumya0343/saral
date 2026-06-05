@@ -18,6 +18,9 @@ logs: ## Tail stack logs
 api: ## Run API locally (needs postgres+redis up)
 	uv run uvicorn saral.api.app:app --reload --app-dir backend
 
+dev: ## Run API + worker in ONE process (shared mock state) for local/frontend testing
+	RUN_WORKER_INPROC=true uv run uvicorn saral.api.app:app --reload --app-dir backend
+
 worker: ## Run worker locally
 	uv run python -m saral.worker.main
 

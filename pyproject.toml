@@ -20,6 +20,7 @@ dependencies = [
     "langgraph>=0.2.60",
     "langchain-core>=0.3",
     "rank-bm25>=0.2.2",
+    "psycopg[binary]>=3.3.4",
 ]
 
 [project.optional-dependencies]
