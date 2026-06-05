@@ -16,10 +16,14 @@ _ACTIONY = {Category.ACTION, Category.COMPLIANCE, Category.ADVERSARIAL}
 
 def actual_outcome(state: RunState) -> dict:
     resp = state.final_response
-    # Customer-facing resolution_status (resolved/escalated/blocked) is the outcome label;
-    # it distinguishes an injection block from an authorization escalation.
+    # A suspended run reports its lifecycle status (awaiting_*); otherwise the customer-facing
+    # resolution_status (resolved/escalated/blocked) is the outcome label.
+    if state.status in ("awaiting_input", "awaiting_confirmation"):
+        status = state.status
+    else:
+        status = resp.resolution_status if resp else state.status
     return {
-        "status": resp.resolution_status if resp else state.status,
+        "status": status,
         "route": state.route,
         "tools": [a.tool for a in state.actions if a.ok],
         "citations": resp.citations if resp else [],

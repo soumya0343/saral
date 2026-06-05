@@ -48,7 +48,9 @@ def test_hindi_query_grounds_in_hindi_clause():
 
 
 def test_rider_clause_grounding():
-    hits = search_customer("diabetes claim reject rider R1.3", "U1010", ["claims", "policy_coverage"])
+    hits = search_customer(
+        "diabetes claim reject rider R1.3", "U1010", ["claims", "policy_coverage"]
+    )
     assert any("R1.3" in h.text for h in hits)
 
 

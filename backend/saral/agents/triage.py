@@ -51,7 +51,7 @@ _INFORMATION = {
     "cover", "coverage", "covered", "policy detail", "policy details",
     "what does", "premium", "exclusion", "claim process", "how do i",
     "how to", "eligible", "kya cover", "policy", "faq", "deductible",
-    "waiting period", "कवर", "पॉलिसी", "प्रीमियम",
+    "waiting period", "कवर", "पॉलिसी", "प्रीमियम", "प्रतीक्षा", "अवधि", "अपवर्जन",
     "loan", "emi", "foreclosure", "tenure", "interest rate", "grace period",
     "reinstate", "nominee", "statement", "miss",
     # Explanation / adjudication questions about the customer's own claim — the differentiator.
@@ -121,9 +121,25 @@ def classify_intents(text: str) -> list[Intent]:
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
         "क्लेम" in text and "स्टेटस" in text
     )
-    if has_claim_id or claim_phrase:
+    # "Why was my claim CLM2010 rejected/reduced" is an EXPLANATION (grounded retrieval), not a
+    # status lookup — the claim id is retrieval context. Suppress get_claim_status so it routes
+    # to pure RAG, unless the customer explicitly asked for "status".
+    _EXPLAIN = ("why", "reason", "rejected", "reduced", "kyun", "kyu", "क्यों", "अस्वीकृत", "घटा")
+    is_explanation = any(w in lower or w in text for w in _EXPLAIN)
+    if (has_claim_id or claim_phrase) and not (is_explanation and not claim_phrase):
         intents.append(Intent(type=IntentType.ACTION, action="get_claim_status", confidence=0.8))
-    if _hits(lower, {k.lower() for k in _INFORMATION}):
+
+    # get_policy_details: a POL id plus a "look it up" phrasing is a read action (and the
+    # ownership check then blocks a cross-customer policy id). A pure policy lookup suppresses
+    # the broad INFORMATION match so it routes cleanly to the action path, not mixed.
+    has_policy_id = bool(_POLICY_RE.search(text))
+    _LOOKUP = ("detail", "विवरण", "vivaran", "dikhao", "show", "batao", "दिखाओ", "chahiye")
+    policy_lookup = has_policy_id and any(w in lower or w in text for w in _LOOKUP)
+    if policy_lookup:
+        intents.append(
+            Intent(type=IntentType.ACTION, action="get_policy_details", confidence=0.85)
+        )
+    if not policy_lookup and _hits(lower, {k.lower() for k in _INFORMATION}):
         intents.append(Intent(type=IntentType.INFORMATION, confidence=0.8))
     if not intents and _hits(lower, {k.lower() for k in _GREETING}):
         intents.append(Intent(type=IntentType.SMALL_TALK, confidence=0.7))
