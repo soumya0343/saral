@@ -29,7 +29,22 @@ class ComplianceGate:
             # A detected injection blocks the whole run; no point authorizing actions.
             return decisions
 
-        # 2) Authorization — per state-affecting / data-exposing action.
+        # 2) Referenced-id ownership — impersonation defense (TRD §18.1). A message naming
+        # ANOTHER customer's claim/policy id is blocked regardless of intent, so impersonation
+        # phrased as an explanation ("why was claim X rejected") can never leak or act.
+        _ID_ACTIONS = (("get_claim_status", "claim_id"), ("get_policy_details", "policy_id"))
+        for action_name, key in _ID_ACTIONS:
+            if entities.get(key):
+                allowed, why = check_authorization(user_id, action_name, entities)
+                if not allowed:
+                    decisions.append(
+                        ComplianceDecision(
+                            decision="block", reason=why, actor="authz", action=action_name
+                        )
+                    )
+                    return decisions
+
+        # 3) Authorization — per state-affecting / data-exposing action.
         action_intents = [i for i in intents if i.type == IntentType.ACTION and i.action]
         for intent in action_intents:
             allowed, why = check_authorization(user_id, intent.action, entities)

@@ -22,6 +22,11 @@ _INJECTION_PATTERNS = [
     re.compile(r"pretend\s+(?:to\s+be|you\s+are)", re.I),
     re.compile(r"reveal\s+(?:the\s+)?(?:system\s+prompt|your\s+instructions)", re.I),
     re.compile(r"override\s+(?:the\s+)?(?:compliance|authoriz|rules)", re.I),
+    re.compile(r"system\s+prompt", re.I),  # any attempt to read/alter the system prompt
+    re.compile(r"\bDAN\b"),  # the "do-anything-now" jailbreak persona
+    re.compile(r"no\s+restrictions?", re.I),
+    re.compile(r"admin\s+(?:mode|access|ki\s+tarah)", re.I),
+    re.compile(r"disable\s+(?:the\s+)?(?:compliance|safety|guardrails?)", re.I),
     # Romanized-Hindi / Hinglish variants
     re.compile(r"(?:saare?\s+)?(?:niyam|rules?)\s+(?:bhool|ignore|chhod)", re.I),
     re.compile(r"(?:refund|loan|payout)\s+(?:ko\s+)?(?:approve|grant|de\s+do|kar\s*do)", re.I),
@@ -31,6 +36,10 @@ _INJECTION_PATTERNS = [
     re.compile(r"नियम\s*भूल"),
     re.compile(r"(?:रिफंड|लोन)\s*(?:को\s*)?अप्रूव"),
     re.compile(r"नियम\s*(?:को\s*)?(?:अनदेखा|नज़रअंदाज)"),
+    re.compile(r"कम्प्लायंस|कंप्लायंस"),  # "disable compliance checks"
+    re.compile(r"जाँच\s*बंद|जांच\s*बंद"),
+    re.compile(r"बिना\s*वेरिफिकेशन|वेरिफिकेशन\s*के\s*बिना"),
+    re.compile(r"अप्रूव\s*कर"),  # "approve my <X>"
 ]
 
 

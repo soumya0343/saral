@@ -1,20 +1,16 @@
-"""Supervisor-orchestrated agent graph.
+"""Supervisor-orchestrated agent graph (TRD §10, §11, §13.4).
 
-The supervisor routes; specialists work (TRD §11.1). Compliance is a gate, not a peer
-(TRD §11.2): it runs sequentially before any action executes, and PII redaction runs before
-the response is emitted. Mixed intents fan retrieval and the action branch out in parallel
-and converge at synthesis.
+The supervisor routes; specialists work. Identity runs before any data read; Compliance is a
+gate, not a peer. State-changing actions pass through step-up → write-confirmation before they
+execute, and no write fires without a fresh token re-validation in the same transition.
 
-    START -> triage -> compliance -> supervisor -(route)->
-        { synthesis              (respond / injection-blocked -> escalate)
-        | rag -> synthesis       (information)
-        | action -> synthesis    (action; gate already enforced via allowed_actions)
-        | {rag, action} -> synthesis   (mixed: parallel fan-out) }
+    START -> triage -> compliance -> identity -> supervisor -(route)->
+        { synthesis                 (respond / injection-blocked -> escalate)
+        | END                       (suspend: awaiting_input / awaiting_confirmation / abandon)
+        | rag -> synthesis          (information; per-customer scoped retrieval)
+        | action -> synthesis       (reads, or a CONFIRMED write executed idempotently)
+        | {rag, action} -> synthesis (mixed: parallel fan-out) }
     synthesis -> END
-
-Compliance runs on every message (injection + authorization) BEFORE the supervisor routes,
-so an injection attempt on any path is caught and the action node only executes allowed
-actions.
 """
 
 from __future__ import annotations
@@ -23,16 +19,26 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
+from saral.actions.confirm import build_pending_write, parse_confirmation
 from saral.agents.action import ActionAgent
 from saral.agents.rag import RagAgent
 from saral.agents.synthesis import SynthesisAgent, SynthesisContext
 from saral.agents.triage import TriageAgent
+from saral.auth.identity import identity_gate
+from saral.auth.stepup import request_step_up
+from saral.authz import allowed_domains as domains_for
+from saral.authz import requires_step_up
 from saral.compliance.gate import ComplianceGate
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.graph.state import RunState
 from saral.logging import get_logger
-from saral.schemas import IntentType, Language
+from saral.schemas import (
+    EscalationRecord,
+    IntentType,
+    Language,
+    ResponsePayload,
+)
 
 log = get_logger(__name__)
 
@@ -47,12 +53,12 @@ _STATUS_FROM_RESOLUTION = {
     "escalated": "escalated",
     "blocked": "escalated",
     "degraded": "degraded",
+    "awaiting": "in_progress",
 }
 
 
 async def triage_node(state: RunState) -> dict:
     result = await _triage.run(state.raw_message)
-    # Fill gaps from the customer's known ids; anything detected in the message wins.
     entities = {**state.known_entities, **result.entities}
     return {
         "language": result.language,
@@ -62,9 +68,148 @@ async def triage_node(state: RunState) -> dict:
     }
 
 
+async def compliance_node(state: RunState) -> dict:
+    decisions = _gate.evaluate(state.raw_message, state.intents, state.user_id, state.entities)
+    return {"compliance_decisions": decisions, "step_count": 1}
+
+
+def _injection_blocked(state: RunState) -> bool:
+    return any(
+        d.actor == "injection_guard" and d.decision == "block"
+        for d in state.compliance_decisions
+    )
+
+
+def _suspend(status: str, message: str, **extra) -> dict:
+    """Terminal suspend update: a user-facing prompt + a non-terminal lifecycle status."""
+    up = {
+        "route": "suspend",
+        "status": status,
+        "final_response": ResponsePayload(
+            resolution_status="awaiting", message=message, escalated=False
+        ),
+        "step_count": 1,
+    }
+    up.update(extra)
+    return up
+
+
+async def identity_node(state: RunState) -> dict:
+    """Identity gate (TRD §12.1.5): derive purpose-limitation domains and gate writes.
+
+    Deterministic. Never raises auth_level itself; for a state-changing action it drives
+    step-up (OTP) then write-confirmation, suspending the run between turns.
+    """
+    up: dict = {"allowed_domains": domains_for(state.intents), "step_count": 1}
+
+    # Injection already blocks the run — don't mint challenges for a manipulation attempt.
+    if _injection_blocked(state):
+        return up
+
+    writes = [
+        i
+        for i in state.intents
+        if i.type == IntentType.ACTION and i.action and requires_step_up(i.action)
+    ]
+    if not writes:
+        return up  # reads / info: normal routing, no gate
+    intent = writes[0]
+
+    # Resume "no" → abandon the pending write (execution authority is mortal; CONTEXT).
+    if state.pending_write is not None and parse_confirmation(state.resume_reply or "") == "no":
+        return {
+            "route": "suspend",
+            "status": "resolved",
+            "pending_write": None,
+            "final_response": ResponsePayload(
+                resolution_status="resolved",
+                message="Okay, I've cancelled that change. Anything else?",
+                escalated=False,
+            ),
+            "step_count": 1,
+        }
+
+    # Build (first turn) or reuse (resume) the conversation-anchored PendingWrite.
+    pending = state.pending_write
+    nonce = state.intent_nonce
+    if pending is None:
+        nonce = state.intent_nonce + 1
+        pending = build_pending_write(
+            state.conversation_id, intent, state.entities, state.raw_message, nonce
+        )
+        if pending is None:
+            # Missing argument → clarification (soft signal), not step-up.
+            q = "What should I update — mobile or email — and to what value?"
+            return _suspend("awaiting_input", q)
+
+    decision = identity_gate(state.auth_level, state.intents)
+
+    # Step-up owed: auth_level below step_up for a write.
+    if decision.owed:
+        # A challenge was answered but auth_level is still below step_up → verification failed.
+        if state.challenge_response:
+            esc = EscalationRecord(
+                conversation_id=state.conversation_id,
+                tenant_id=state.tenant_id,
+                detected_intent=intent.action or "write",
+                attempted_actions=[intent.action or ""],
+                blocking_reason="step_up_failed",
+                transcript_ref=state.conversation_id,
+                pending_action=pending.tool,
+                sla_target="4h",
+            )
+            return {
+                "route": "suspend",
+                "status": "escalated",
+                "pending_write": pending,
+                "escalation": esc,
+                "final_response": ResponsePayload(
+                    resolution_status="escalated",
+                    message=(
+                        "I couldn't verify the one-time code, so I've escalated this to a "
+                        "human agent who will follow up."
+                    ),
+                    escalated=True,
+                ),
+                "step_count": 1,
+            }
+        chal = request_step_up(state.user_id)
+        prompt = (
+            f"To {pending.tool.replace('_', ' ')}, I need to verify it's you. "
+            "I've sent a one-time code."
+        )
+        if chal.get("test_otp"):
+            prompt += f" (test code: {chal['test_otp']})"
+        prompt += " Please reply with the code."
+        return _suspend(
+            "awaiting_input",
+            prompt,
+            pending_write=pending,
+            intent_nonce=nonce,
+            step_up_owed=True,
+            challenge_id=chal["challenge_id"],
+        )
+
+    # auth_level == step_up. Confirmed? → execute; else read back for confirmation.
+    if parse_confirmation(state.resume_reply or "") == "yes":
+        return {
+            "pending_write": pending,
+            "intent_nonce": nonce,
+            "step_up_owed": False,
+            "step_count": 1,
+        }  # route stays None → supervisor routes to action/mixed → write executes
+    return _suspend(
+        "awaiting_confirmation",
+        pending.read_back,
+        pending_write=pending,
+        intent_nonce=nonce,
+        step_up_owed=False,
+    )
+
+
 def _route(state: RunState) -> str:
     if state.step_count > get_settings().max_step_count:
-        return "end"
+        return "respond"
     kinds = {i.type for i in state.intents}
     has_action = IntentType.ACTION in kinds
     has_info = IntentType.INFORMATION in kinds
@@ -78,22 +223,24 @@ def _route(state: RunState) -> str:
 
 
 async def supervisor_node(state: RunState) -> dict:
+    # Identity may have already chosen a terminal/suspend route — honour it.
+    if state.route is not None:
+        return {"step_count": 1}
     return {"route": _route(state), "step_count": 1}
 
 
 async def rag_node(state: RunState) -> dict:
-    # Partial-failure isolation (TRD §15): a specialist failure degrades, never crashes.
+    # Per-customer scoped retrieval (FR-16): pass verified user_id + allowed domains.
     try:
-        passages = await _rag.run(state.raw_message)
+        passages = await _rag.run(
+            state.raw_message,
+            user_id=state.user_id,
+            allowed_domains=state.allowed_domains,
+        )
         return {"retrieved": passages, "step_count": 1}
     except Exception as e:  # noqa: BLE001
         log.error("node.failed", node="rag", run_id=state.run_id, error=str(e))
         return {"degraded_agents": ["rag"], "step_count": 1}
-
-
-async def compliance_node(state: RunState) -> dict:
-    decisions = _gate.evaluate(state.raw_message, state.intents, state.user_id, state.entities)
-    return {"compliance_decisions": decisions, "step_count": 1}
 
 
 async def action_node(state: RunState) -> dict:
@@ -101,7 +248,12 @@ async def action_node(state: RunState) -> dict:
     permitted = [i for i in state.intents if i.action in allowed]
     try:
         records = await _action.run(
-            permitted, state.entities, state.user_id, state.run_id, state.raw_message
+            permitted,
+            state.entities,
+            state.user_id,
+            state.run_id,
+            state.raw_message,
+            pending_write=state.pending_write,
         )
         return {"actions": records, "step_count": 1}
     except Exception as e:  # noqa: BLE001
@@ -119,24 +271,35 @@ async def synthesis_node(state: RunState) -> dict:
         degraded=state.degraded_agents,
     )
     response = await _synth.run(ctx)
-    # Pre-send gate: redact any PII in the outbound message.
-    response.message = redact_pii(response.message)
+    response.message = redact_pii(response.message)  # pre-send gate (FR-6)
     status = _STATUS_FROM_RESOLUTION.get(response.resolution_status, "resolved")
-    # A specialist failure degrades the run unless it was already blocked/escalated.
     if state.degraded_agents and status == "resolved":
         status = "degraded"
         response.resolution_status = "degraded"
-    return {"final_response": response, "status": status, "step_count": 1}
+
+    update: dict = {"final_response": response, "status": status, "step_count": 1}
+    # Escalation as a real artifact (TRD §12.7): emit a record on any escalated outcome.
+    if status == "escalated" and state.escalation is None:
+        primary = next((i.action or str(i.type) for i in state.intents), "unknown")
+        update["escalation"] = EscalationRecord(
+            conversation_id=state.conversation_id,
+            tenant_id=state.tenant_id,
+            detected_intent=primary,
+            attempted_actions=[a.tool for a in state.actions],
+            blocking_reason="compliance_block_or_low_confidence",
+            transcript_ref=state.conversation_id,
+            pending_action=state.pending_write.tool if state.pending_write else None,
+            sla_target="4h",
+        )
+    return update
 
 
 def _branch(state: RunState):
-    # An injection block short-circuits to synthesis (which escalates).
-    if any(
-        d.actor == "injection_guard" and d.decision == "block"
-        for d in state.compliance_decisions
-    ):
-        return "synthesis"
+    if _injection_blocked(state):
+        return "synthesis"  # injection → escalate via synthesis
     route = state.route
+    if route == "suspend":
+        return "end"
     if route == "rag":
         return "rag"
     if route == "action":
@@ -150,18 +313,20 @@ def _assemble() -> StateGraph:
     g = StateGraph(RunState)
     g.add_node("triage", triage_node)
     g.add_node("compliance", compliance_node)
+    g.add_node("identity", identity_node)
     g.add_node("supervisor", supervisor_node)
     g.add_node("rag", rag_node)
     g.add_node("action", action_node)
     g.add_node("synthesis", synthesis_node)
 
     g.add_edge(START, "triage")
-    g.add_edge("triage", "compliance")  # gate runs on every message
-    g.add_edge("compliance", "supervisor")
+    g.add_edge("triage", "compliance")  # injection + authz gate on every message
+    g.add_edge("compliance", "identity")  # identity before any data read; gates writes
+    g.add_edge("identity", "supervisor")
     g.add_conditional_edges(
         "supervisor",
         _branch,
-        {"rag": "rag", "action": "action", "synthesis": "synthesis"},
+        {"rag": "rag", "action": "action", "synthesis": "synthesis", "end": END},
     )
     g.add_edge("rag", "synthesis")
     g.add_edge("action", "synthesis")

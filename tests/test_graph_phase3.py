@@ -16,16 +16,15 @@ async def _run(message: str, user_id: str = "U1001") -> RunState:
     return RunState.model_validate(await graph.ainvoke(init))
 
 
-async def test_mixed_authorized_resolves():
+async def test_mixed_write_suspends_for_stepup():
+    # A mixed request whose action is a write gates on step-up before executing (FR-14).
     state = await _run(
         "What does my health policy cover and update my mobile number to 9000000000"
     )
-    assert state.route == "mixed"
-    assert state.retrieved  # RAG ran
-    assert any(a.tool == "update_contact" and a.ok for a in state.actions)  # action ran
-    assert state.final_response is not None
-    assert state.final_response.citations  # answer is grounded
-    assert state.status == "resolved"
+    assert state.status == "awaiting_input"
+    assert state.pending_write is not None
+    assert state.pending_write.tool == "update_contact"
+    assert not any(a.tool == "update_contact" and a.ok for a in state.actions)
 
 
 async def test_unauthorized_action_blocked():

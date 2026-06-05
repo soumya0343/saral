@@ -1,0 +1,62 @@
+# render.yaml — Saral on Render (Blueprint).
+# Set secret env vars in the Render dashboard before first deploy:
+#   SESSION_SECRET (required), SARVAM_API_KEY / ANTHROPIC_API_KEY / LLM_PROVIDER_ORDER (optional).
+# DATABASE_URL and REDIS_URL are wired automatically from the managed services below.
+
+services:
+  - type: web
+    name: saral-api
+    runtime: docker
+    dockerfilePath: ./Dockerfile.api
+    plan: starter
+    region: singapore
+    healthCheckPath: /health
+    preDeployCommand: cd /app && PYTHONPATH=backend python -m alembic upgrade head
+    envVars:
+      - { key: APP_ENV, value: prod }
+      - { key: LOG_JSON, value: "true" }
+      - { key: STORE_BACKEND, value: postgres }
+      - { key: CHECKPOINT_BACKEND, value: postgres }
+      - { key: PYTHONPATH, value: /app/backend }
+      - { key: CORPUS_DIR, value: data/policy_corpus }
+      - { key: CUSTOMERS_DIR, value: data/customers }
+      - { key: DATABASE_URL, fromDatabase: { name: saral-postgres, property: connectionString } }
+      - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
+      - { key: SESSION_SECRET, sync: false }
+      - { key: SARVAM_API_KEY, sync: false }
+      - { key: ANTHROPIC_API_KEY, sync: false }
+      - { key: LLM_PROVIDER_ORDER, sync: false }
+
+  - type: worker
+    name: saral-worker
+    runtime: docker
+    dockerfilePath: ./Dockerfile.worker
+    plan: starter
+    region: singapore
+    envVars:
+      - { key: APP_ENV, value: prod }
+      - { key: LOG_JSON, value: "true" }
+      - { key: STORE_BACKEND, value: postgres }
+      - { key: CHECKPOINT_BACKEND, value: postgres }
+      - { key: PYTHONPATH, value: /app/backend }
+      - { key: CORPUS_DIR, value: data/policy_corpus }
+      - { key: CUSTOMERS_DIR, value: data/customers }
+      - { key: DATABASE_URL, fromDatabase: { name: saral-postgres, property: connectionString } }
+      - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
+      - { key: SESSION_SECRET, sync: false }
+      - { key: SARVAM_API_KEY, sync: false }
+      - { key: ANTHROPIC_API_KEY, sync: false }
+      - { key: LLM_PROVIDER_ORDER, sync: false }
+
+  - type: redis
+    name: saral-redis
+    plan: starter
+    region: singapore
+    ipAllowList: []
+
+databases:
+  - name: saral-postgres
+    databaseName: saral
+    user: saral
+    plan: starter
+    region: singapore

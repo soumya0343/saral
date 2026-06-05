@@ -10,6 +10,7 @@ thread + timeout), so this uses a sync engine.
 from __future__ import annotations
 
 from functools import lru_cache
+from pathlib import Path
 
 from sqlalchemy import Integer, String, Text, create_engine, func, select
 from sqlalchemy.orm import DeclarativeBase, Mapped, Session, mapped_column
@@ -77,6 +78,17 @@ class MMeta(MockBase):
     __tablename__ = "mock_meta"
     name: Mapped[str] = mapped_column(String(32), primary_key=True)
     n: Mapped[int] = mapped_column(Integer)
+
+
+class MChallenge(MockBase):
+    """Step-up OTP challenge (TRD §11.5). Synthetic: code returned in non-prod, no SMS."""
+
+    __tablename__ = "mock_challenges"
+    challenge_id: Mapped[str] = mapped_column(String(48), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    code: Mapped[str] = mapped_column(String(8))
+    expires_epoch: Mapped[int] = mapped_column(Integer)
+    used: Mapped[int] = mapped_column(Integer, default=0)
 
 
 # --- Seed data (pre-existing customers for cross-user / authorization demos) ---
@@ -153,15 +165,99 @@ class Store:
                             note=note,
                         )
                     )
+            self._seed_from_manifest(s)
             s.commit()
+
+    def _seed_from_manifest(self, s: Session) -> None:
+        """Seed hero + thin customers from data/customers/manifest.yaml (additive, skip-if-exists).
+
+        Keeps the structured store consistent with the per-customer documents the RAG index cites.
+        """
+        import yaml
+
+        from saral.config import get_settings
+
+        path = Path(get_settings().customers_dir) / "manifest.yaml"
+        if not path.exists():
+            return
+        data = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        for cust in data.get("customers", []):
+            cid = cust["customer_id"]
+            if s.get(MUser, cid) is None:
+                s.add(
+                    MUser(
+                        id=cid,
+                        name=cust.get("name", cid),
+                        mobile=cust.get("registered_mobile"),
+                        email=cust.get("registered_email"),
+                    )
+                )
+            for p in cust.get("policies", []):
+                if s.get(MPolicy, p["policy_id"]) is None:
+                    s.add(
+                        MPolicy(
+                            policy_id=p["policy_id"],
+                            holder_user_id=cid,
+                            product=p.get("product", "health"),
+                            status=p.get("status", "active"),
+                            premium_inr=p.get("premium_inr", 0),
+                            sum_assured_inr=p.get("sum_assured_inr", 0),
+                            renewal_date=p.get("renewal_date", ""),
+                        )
+                    )
+            for c in cust.get("claims", []):
+                if s.get(MClaim, c["claim_id"]) is None:
+                    s.add(
+                        MClaim(
+                            claim_id=c["claim_id"],
+                            policy_id=c["policy_id"],
+                            status=c.get("status", "under_review"),
+                            amount_inr=c.get("amount_inr"),
+                            last_updated=c.get("last_updated", ""),
+                            note=c.get("note"),
+                        )
+                    )
 
     def reset(self) -> None:
         """Test helper: wipe + reseed."""
         with Session(self.engine) as s:
-            for model in (MIdem, MTicket, MClaim, MPolicy, MUser, MMeta):
+            for model in (MChallenge, MIdem, MTicket, MClaim, MPolicy, MUser, MMeta):
                 s.query(model).delete()
             s.commit()
         self.seed()
+
+    # --- step-up challenges (TRD §11.5) ---
+    def create_challenge(self, user_id: str, code: str, ttl_s: int) -> str:
+        import time
+
+        challenge_id = f"chl_{user_id}_{int(time.time() * 1000)}"
+        with Session(self.engine) as s:
+            s.add(
+                MChallenge(
+                    challenge_id=challenge_id,
+                    user_id=user_id,
+                    code=code,
+                    expires_epoch=int(time.time()) + ttl_s,
+                )
+            )
+            s.commit()
+        return challenge_id
+
+    def verify_challenge(self, challenge_id: str, response: str, user_id: str) -> bool:
+        """Single-use, TTL-bounded, ownership-bound. Returns True only on an exact match."""
+        import time
+
+        with Session(self.engine) as s:
+            ch = s.get(MChallenge, challenge_id)
+            if ch is None or ch.used or ch.user_id != user_id:
+                return False
+            if int(time.time()) > ch.expires_epoch:
+                return False
+            if (response or "").strip() != ch.code:
+                return False
+            ch.used = 1  # single-use: burn the challenge on success
+            s.commit()
+            return True
 
     def _next_id(self, s: Session) -> int:
         meta = s.get(MMeta, "id_seq")
@@ -312,6 +408,10 @@ class Store:
     def get_customer_context(self, user_id: str) -> dict:
         with Session(self.engine) as s:
             return self._context(s, user_id)
+
+    def user_exists(self, user_id: str) -> bool:
+        with Session(self.engine) as s:
+            return s.get(MUser, user_id) is not None
 
     @staticmethod
     def _context(s: Session, user_id: str) -> dict:

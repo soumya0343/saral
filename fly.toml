@@ -1,0 +1,62 @@
+# fly.toml — Saral on Fly.io (single app, two process groups).
+#
+# BEFORE DEPLOYING — set secrets (never commit values):
+#   fly secrets set \
+#     DATABASE_URL="postgresql+asyncpg://<user>:<pass>@<fly-pg-host>:5432/saral" \
+#     REDIS_URL="rediss://default:<token>@<upstash-host>:<port>" \
+#     SESSION_SECRET="<32+ byte random string>" \
+#     SARVAM_API_KEY="sk_..." \
+#     LLM_PROVIDER_ORDER="sarvam,anthropic,stub"
+# LLM keys are optional — without them the deterministic stub provider runs the demo.
+
+app = "saral"
+primary_region = "bom"   # Mumbai — Sarvam proximity + DPDP data residency
+
+[build]
+  dockerfile = "Dockerfile.api"
+
+[processes]
+  app    = "uvicorn saral.api.app:app --host 0.0.0.0 --port 8080 --app-dir backend"
+  worker = "python -m saral.worker.main"
+
+[env]
+  APP_ENV            = "prod"
+  LOG_LEVEL          = "INFO"
+  LOG_JSON           = "true"
+  STORE_BACKEND      = "postgres"
+  CHECKPOINT_BACKEND = "postgres"
+  PYTHONPATH         = "/app/backend"
+  CORPUS_DIR         = "data/policy_corpus"
+  CUSTOMERS_DIR      = "data/customers"
+  SCENARIOS_PATH     = "data/scenarios/scenarios.yaml"
+  EVAL_REPORTS_DIR   = "data/eval_reports"
+
+[http_service]
+  processes            = ["app"]
+  internal_port        = 8080
+  force_https          = true
+  auto_stop_machines   = true
+  auto_start_machines  = true
+  min_machines_running = 1
+
+  [http_service.headers]
+    X-Accel-Buffering = "no"   # let SSE chunks reach the browser immediately
+
+  [[http_service.checks]]
+    grace_period = "10s"
+    interval     = "15s"
+    method       = "GET"
+    path         = "/health"
+    timeout      = "5s"
+
+[[vm]]
+  processes = ["app"]
+  memory    = "512mb"
+  cpu_kind  = "shared"
+  cpus      = 1
+
+[[vm]]
+  processes = ["worker"]
+  memory    = "512mb"
+  cpu_kind  = "shared"
+  cpus      = 1
