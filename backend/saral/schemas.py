@@ -205,6 +205,7 @@ class RunRequest(BaseModel):
     # Resume of a suspended run: the customer's reply to a confirmation / clarification.
     resume_reply: str | None = None
     pending_write: PendingWrite | None = None
+    intent_nonce: int = 0
     # Step-up challenge echoed back by the customer (the OTP), validated on resume.
     challenge_id: str | None = None
     challenge_response: str | None = None

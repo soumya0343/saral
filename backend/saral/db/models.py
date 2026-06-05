@@ -1,5 +1,8 @@
-"""ORM models. Phase 1 introduces conversations + messages; later phases add
-agent_runs, action_records, audit_log, eval_results.
+"""ORM models. All tables carry `tenant_id` (multi-institution ready, even single-tenant).
+
+Phase 1: conversations + messages. Later phases: agent_runs, action_records, audit_log,
+eval_results. v2 adds suspend/resume state on the conversation, an escalations table, and
+tokenized (no-raw-PII) audit refs (TRD §16).
 """
 
 from __future__ import annotations
@@ -10,14 +13,27 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from saral.db.base import Base, TimestampMixin, uuid_str
 
+_DEFAULT_TENANT = "t_demo"
+
 
 class Conversation(Base, TimestampMixin):
     __tablename__ = "conversations"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     user_id: Mapped[str] = mapped_column(String(64), index=True, nullable=False)
     language: Mapped[str | None] = mapped_column(String(16), nullable=True)
     status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
+    consent_status: Mapped[str] = mapped_column(String(16), default="granted", nullable=False)
+
+    # --- suspend/resume custody (TRD §13.2/§13.4) ---
+    # The current session token (mock IdP custody for the demo); re-validated on every resume.
+    session_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    suspend_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    pending_write: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    challenge_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # The message that triggered the suspend, re-sent on resume so the write re-evaluates.
+    original_message: Mapped[str | None] = mapped_column(Text, nullable=True)
 
     messages: Mapped[list[Message]] = relationship(
         back_populates="conversation",
@@ -30,6 +46,7 @@ class Message(Base, TimestampMixin):
     __tablename__ = "messages"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), nullable=False
     )
@@ -48,6 +65,7 @@ class AgentRun(Base, TimestampMixin):
     __tablename__ = "agent_runs"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     conversation_id: Mapped[str] = mapped_column(
         ForeignKey("conversations.id", ondelete="CASCADE"), index=True, nullable=False
     )
@@ -62,32 +80,60 @@ class ActionRecordRow(Base, TimestampMixin):
     __tablename__ = "action_records"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     run_id: Mapped[str] = mapped_column(
         ForeignKey("agent_runs.id", ondelete="CASCADE"), index=True, nullable=False
     )
     tool: Mapped[str] = mapped_column(String(64), nullable=False)
     args: Mapped[dict] = mapped_column(JSONB, default=dict)  # redacted
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    intent_nonce: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    # intent_logged | result | abandoned (TRD §16)
+    state: Mapped[str] = mapped_column(String(16), default="result", nullable=False)
     ok: Mapped[bool] = mapped_column(default=False)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AuditLog(Base, TimestampMixin):
-    """Append-only, hash-chained decision log for tamper evidence (TRD §16)."""
+    """Append-only, hash-chained decision log for tamper evidence (TRD §16).
+
+    Holds NO raw PII — only reason codes and tokenized refs (`user_ref` = hash(tenant,user),
+    `args_hash` = hash(canonical_args)) — so the 7-year hold stays erasure-compatible.
+    """
 
     __tablename__ = "audit_log"
 
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     run_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     decision: Mapped[str] = mapped_column(String(16), nullable=False)  # allow|block|escalate
     reason: Mapped[str] = mapped_column(Text, nullable=False)
     actor: Mapped[str] = mapped_column(String(32), nullable=False)
+    user_ref: Mapped[str | None] = mapped_column(String(64), nullable=True)  # tokenized
+    args_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)  # tokenized
     hash_prev: Mapped[str] = mapped_column(String(64), nullable=False)
     hash_self: Mapped[str] = mapped_column(String(64), nullable=False)
 
     __table_args__ = (Index("ix_audit_run_seq", "run_id", "seq", unique=True),)
+
+
+class Escalation(Base, TimestampMixin):
+    """Human-handoff record (TRD §12.7). Terminal for the run; the conversation stays durable."""
+
+    __tablename__ = "escalations"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
+    tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
+    conversation_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    detected_intent: Mapped[str] = mapped_column(String(64), nullable=False)
+    blocking_reason: Mapped[str] = mapped_column(String(64), nullable=False)
+    attempted_actions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
+    pending_action: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    transcript_ref: Mapped[str] = mapped_column(String(64), nullable=False)
+    sla_target: Mapped[str] = mapped_column(String(16), nullable=False)
+    operator_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
 
 
 class EvalResult(Base, TimestampMixin):

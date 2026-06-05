@@ -20,10 +20,16 @@ async def execute_run(req: RunRequest) -> RunState:
     init = RunState(
         run_id=req.run_id,
         conversation_id=req.conversation_id,
+        tenant_id=req.tenant_id,
         user_id=req.user_id,
+        auth_level=req.auth_level,
         raw_message=req.message,
         history=req.history,
         known_entities=req.known_entities,
+        pending_write=req.pending_write,
+        intent_nonce=req.intent_nonce,
+        resume_reply=req.resume_reply,
+        challenge_response=req.challenge_response,
     )
     # Resume from a checkpoint if this run was interrupted mid-flight (worker crash).
     snapshot = await graph.aget_state(config)

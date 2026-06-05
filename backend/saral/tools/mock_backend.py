@@ -51,6 +51,10 @@ def get_customer_context(user_id: str) -> dict:
     return get_store().get_customer_context(user_id)
 
 
+def user_exists(user_id: str) -> bool:
+    return get_store().user_exists(user_id)
+
+
 def _reset_state() -> None:
     """Test helper: wipe + reseed the store."""
     get_store().reset()

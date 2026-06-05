@@ -11,6 +11,8 @@ NOTE: In Phase 3 the Compliance gate runs *before* any state-changing call here.
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Callable
+from typing import Any
 
 from saral.config import get_settings
 from saral.logging import get_logger
@@ -54,10 +56,12 @@ class ActionAgent:
         self, pw: PendingWrite, user_id: str, message: str
     ) -> ActionRecord:
         """Execute a confirmed write under its idempotent key (exactly-once on resume)."""
-        idem = pw.idempotency_key
+        idem: str = pw.idempotency_key
+        call: Callable[[], Any]
         if pw.tool == "update_contact":
-            args = {"user_id": user_id, "field": pw.field, "value": pw.value}
-            call = lambda: mb.update_contact(user_id, pw.field, pw.value, idempotency_key=idem)  # noqa: E731
+            field, value = pw.field or "", pw.value or ""
+            args = {"user_id": user_id, "field": field, "value": value}
+            call = lambda: mb.update_contact(user_id, field, value, idempotency_key=idem)  # noqa: E731
         elif pw.tool == "raise_ticket":
             subject = pw.value or message[:60]
             args = {"user_id": user_id, "subject": subject}

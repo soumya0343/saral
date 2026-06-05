@@ -1,4 +1,10 @@
-"""Conversation + message + SSE stream routes (TRD §17, Phase 1 subset)."""
+"""Conversation + message + resume + SSE stream routes (TRD §17).
+
+Identity is token-derived (TRD §11.5): the conversation holds a session token (mock-IdP
+custody for the demo) that is re-validated on every message and every resume. A write
+suspends the run; `/reply` resumes it — re-validating identity and, if the session expired
+during suspension, re-earning step-up before the write fires.
+"""
 
 from __future__ import annotations
 
@@ -10,12 +16,14 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from saral.auth import decode_token, mint_session_token, verify_step_up
+from saral.auth.tokens import AuthError
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.db.models import Conversation, Message
 from saral.db.session import get_session
 from saral.runbus import enqueue_run, subscribe_trace
-from saral.schemas import HistoryTurn, RunRequest
+from saral.schemas import AuthLevel, HistoryTurn, PendingWrite, RunRequest
 from saral.tools import mock_backend as mb
 
 router = APIRouter()
@@ -53,6 +61,7 @@ class ConversationOut(BaseModel):
     user_id: str
     status: str
     language: str | None = None
+    token: str | None = None  # session token minted for this conversation (mock IdP)
 
 
 class SendMessage(BaseModel):
@@ -76,10 +85,69 @@ class MessageOut(BaseModel):
 async def start_conversation(
     body: StartConversation, db: AsyncSession = Depends(get_session)
 ) -> ConversationOut:
-    convo = Conversation(user_id=body.user_id)
+    # Mint a session token for this customer (the host app's job; simulated here).
+    token = mint_session_token(body.user_id)
+    claims = decode_token(token)
+    convo = Conversation(
+        user_id=claims.user_id, tenant_id=claims.tenant_id, session_token=token
+    )
     db.add(convo)
     await db.flush()
-    return ConversationOut(id=convo.id, user_id=convo.user_id, status=convo.status)
+    return ConversationOut(
+        id=convo.id, user_id=convo.user_id, status=convo.status, token=token
+    )
+
+
+def _claims_or_refresh(convo: Conversation) -> tuple[str, str, AuthLevel, str]:
+    """Re-validate the conversation token (TRD §11.5). On expiry, re-mint a SESSION token —
+    a write that suspended at step_up will then re-earn step-up on resume.
+    Returns (user_id, tenant_id, auth_level, token)."""
+    token = convo.session_token
+    if token:
+        try:
+            c = decode_token(token)
+            return c.user_id, c.tenant_id, c.auth_level, token
+        except AuthError:
+            pass
+    fresh = mint_session_token(convo.user_id, tenant_id=convo.tenant_id)
+    c = decode_token(fresh)
+    convo.session_token = fresh
+    return c.user_id, c.tenant_id, c.auth_level, fresh
+
+
+async def _append_message(
+    db: AsyncSession, convo: Conversation, role: str, content: str
+) -> Message:
+    next_seq = (
+        await db.scalar(
+            select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
+                Message.conversation_id == convo.id
+            )
+        )
+    ) or 1
+    msg = Message(
+        tenant_id=convo.tenant_id,
+        conversation_id=convo.id,
+        role=role,
+        content=redact_pii(content),  # FR-6: redact PII before store
+        sequence_num=next_seq,
+    )
+    db.add(msg)
+    await db.flush()
+    return msg
+
+
+async def _history(db: AsyncSession, conversation_id: str) -> list[HistoryTurn]:
+    n = get_settings().conversation_memory_turns
+    recent = (
+        await db.scalars(
+            select(Message)
+            .where(Message.conversation_id == conversation_id)
+            .order_by(Message.sequence_num.desc())
+            .limit(n)
+        )
+    ).all()
+    return [HistoryTurn(role=m.role, content=m.content) for m in reversed(recent)]
 
 
 @router.post(
@@ -94,47 +162,83 @@ async def send_message(
     if convo is None:
         raise HTTPException(status_code=404, detail="conversation not found")
 
-    # Short-term memory: last N turns, oldest first, for context injection.
-    n = get_settings().conversation_memory_turns
-    recent = (
-        await db.scalars(
-            select(Message)
-            .where(Message.conversation_id == conversation_id)
-            .order_by(Message.sequence_num.desc())
-            .limit(n)
-        )
-    ).all()
-    history = [HistoryTurn(role=m.role, content=m.content) for m in reversed(recent)]
-
-    next_seq = (
-        await db.scalar(
-            select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
-                Message.conversation_id == conversation_id
-            )
-        )
-    ) or 1
-    msg = Message(
-        conversation_id=conversation_id,
-        role="user",
-        content=redact_pii(body.content),  # FR-6: redact PII before store
-        sequence_num=next_seq,
-    )
-    db.add(msg)
-    await db.flush()
+    user_id, tenant_id, auth_level, _ = _claims_or_refresh(convo)
+    history = await _history(db, conversation_id)
+    msg = await _append_message(db, convo, "user", body.content)
 
     run_id = uuid.uuid4().hex
     await enqueue_run(
         RunRequest(
             run_id=run_id,
             conversation_id=conversation_id,
-            user_id=convo.user_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+            auth_level=auth_level,
             message=body.content,
             history=history,
-            known_entities=mb.get_customer_context(convo.user_id),
+            known_entities=mb.get_customer_context(user_id),
         )
     )
+    return MessageAccepted(conversation_id=conversation_id, message_id=msg.id, run_id=run_id)
+
+
+@router.post(
+    "/conversations/{conversation_id}/reply",
+    response_model=MessageAccepted,
+    tags=["conversations"],
+)
+async def reply(
+    conversation_id: str, body: SendMessage, db: AsyncSession = Depends(get_session)
+) -> MessageAccepted:
+    """Resume a suspended run (clarification / step-up OTP / write confirmation).
+
+    Re-validates identity first (TRD §11.5). For an OTP reply, verifies the challenge and
+    re-mints the token at step_up; for a confirmation, carries the persisted pending write
+    and the yes/no answer into a fresh run.
+    """
+    convo = await db.get(Conversation, conversation_id)
+    if convo is None:
+        raise HTTPException(status_code=404, detail="conversation not found")
+    if not convo.suspend_status:
+        raise HTTPException(status_code=409, detail="conversation is not awaiting a reply")
+
+    user_id, tenant_id, auth_level, token = _claims_or_refresh(convo)
+    pending = PendingWrite(**convo.pending_write) if convo.pending_write else None
+    original = convo.original_message or body.content
+    await _append_message(db, convo, "user", body.content)
+
+    req = RunRequest(
+        run_id=uuid.uuid4().hex,
+        conversation_id=conversation_id,
+        user_id=user_id,
+        tenant_id=tenant_id,
+        auth_level=auth_level,
+        message=original,  # re-send the original so the write re-evaluates (not the reply)
+        history=await _history(db, conversation_id),
+        known_entities=mb.get_customer_context(user_id),
+        pending_write=pending,
+        intent_nonce=pending.intent_nonce if pending else 0,
+    )
+
+    if convo.suspend_status == "awaiting_input" and convo.challenge_id:
+        # Step-up OTP reply. Verify, then re-mint at step_up (or escalate on failure).
+        if verify_step_up(convo.challenge_id, body.content, user_id):
+            fresh = mint_session_token(user_id, tenant_id=tenant_id, auth_level=AuthLevel.STEP_UP)
+            convo.session_token = fresh
+            req.auth_level = AuthLevel.STEP_UP
+        else:
+            req.challenge_response = body.content  # wrong OTP -> graph escalates
+    elif convo.suspend_status == "awaiting_input":
+        # Clarification (missing arg): fold the answer into the original so triage re-extracts.
+        req.message = f"{original} {body.content}".strip()
+    elif convo.suspend_status == "awaiting_confirmation":
+        req.resume_reply = body.content  # yes/no; identity re-validates before any write
+
+    # Clear suspend custody now; the worker will re-set it if the run suspends again.
+    convo.suspend_status = None
+    await enqueue_run(req)
     return MessageAccepted(
-        conversation_id=conversation_id, message_id=msg.id, run_id=run_id
+        conversation_id=conversation_id, message_id="", run_id=req.run_id
     )
 
 

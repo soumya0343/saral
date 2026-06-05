@@ -409,6 +409,10 @@ class Store:
         with Session(self.engine) as s:
             return self._context(s, user_id)
 
+    def user_exists(self, user_id: str) -> bool:
+        with Session(self.engine) as s:
+            return s.get(MUser, user_id) is not None
+
     @staticmethod
     def _context(s: Session, user_id: str) -> dict:
         ctx: dict = {}
