@@ -35,6 +35,9 @@ class Settings(BaseSettings):
     # --- Redis Streams run bus ---
     run_stream: str = "agent-runs"
     run_consumer_group: str = "workers"
+    # Local dev convenience: run the agent worker as a task inside the API process so the
+    # in-memory mock backend is shared. In production API and worker are separate pods.
+    run_worker_inproc: bool = False
 
     # --- LLM providers (all optional in dev) ---
     sarvam_api_key: str | None = None
@@ -43,7 +46,7 @@ class Settings(BaseSettings):
     # Ordered fallback chain; providers without a key are skipped, then stub.
     llm_provider_order: str = "sarvam,anthropic,stub"
     anthropic_model: str = "claude-sonnet-4-6"
-    sarvam_model: str = "sarvam-m"
+    sarvam_model: str = "sarvam-30b"
 
     # --- Retrieval ---
     corpus_dir: str = "data/policy_corpus"

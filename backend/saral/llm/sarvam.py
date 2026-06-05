@@ -37,13 +37,19 @@ class SarvamProvider:
     async def _chat(self, payload: dict) -> str:
         url = f"{self._settings.sarvam_base_url.rstrip('/')}/v1/chat/completions"
         try:
-            async with httpx.AsyncClient(timeout=30.0) as client:
+            async with httpx.AsyncClient(timeout=60.0) as client:
                 resp = await client.post(url, headers=self._headers(), json=payload)
                 resp.raise_for_status()
                 data = resp.json()
         except Exception as e:  # noqa: BLE001
             raise LLMError(f"sarvam request failed: {e}") from e
-        return data["choices"][0]["message"]["content"]
+        msg = data["choices"][0]["message"]
+        content = msg.get("content")
+        # sarvam-30b/105b are reasoning models: `content` is null until reasoning finishes.
+        # An empty content means it ran out of tokens mid-reasoning -> trigger fallback.
+        if not content:
+            raise LLMError("sarvam returned empty content (reasoning truncated; raise max_tokens)")
+        return content
 
     @staticmethod
     def _to_openai(messages: list[Message]) -> list[dict]:

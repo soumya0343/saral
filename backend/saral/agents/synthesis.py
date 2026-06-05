@@ -9,9 +9,11 @@ The deterministic stub composer doubles as the no-key path and keeps eval reprod
 
 from __future__ import annotations
 
+import contextlib
+
 from pydantic import BaseModel, Field
 
-from saral.llm.base import Message
+from saral.llm.base import LLMError, Message
 from saral.llm.factory import get_llm
 from saral.llm.stub import register_structured_handler
 from saral.schemas import (
@@ -57,10 +59,18 @@ def _action_summary(rec: ActionRecord, lang: Language) -> str:
     if rec.needs_clarification:
         return rec.needs_clarification
     if not rec.ok:
+        if rec.tool == "get_claim_status":
+            return "You don't have any claims on file yet. Would you like to file one?"
         return f"Could not complete {rec.tool}: {rec.error}"
     if rec.tool == "get_claim_status":
         r = rec.result or {}
         return f"Claim {r.get('claim_id')} status: {r.get('status')} ({r.get('note', '')})".strip()
+    if rec.tool == "file_claim":
+        r = rec.result or {}
+        return (
+            f"Filed your claim {r.get('claim_id')} — status {r.get('status')}. "
+            f"{r.get('note', '')}"
+        ).strip()
     if rec.tool == "get_policy_details":
         r = rec.result or {}
         return f"Policy {r.get('policy_id')}: {r.get('product')}, status {r.get('status')}."
@@ -147,6 +157,16 @@ _SYSTEM_PROMPT = (
 )
 
 
+_LANG_NAME = {Language.EN: "English", Language.HI: "Hindi", Language.HINGLISH: "Hinglish"}
+
+_PHRASING_PROMPT = (
+    "You are a customer-support agent for an insurer. Write a SHORT, warm reply (1-3 "
+    "sentences) in {lang}. Use ONLY the facts below — do not invent policy details, numbers, "
+    "or outcomes. If a source is given, you may reference it. Answer directly; do not show "
+    "your reasoning.\n\nFacts:\n{facts}"
+)
+
+
 class SynthesisAgent:
     name = "synthesis"
 
@@ -154,8 +174,33 @@ class SynthesisAgent:
         self._llm = get_llm()
 
     async def run(self, ctx: SynthesisContext) -> ResponsePayload:
+        # Deterministic structure (status / citations / actions) — never delegated.
+        payload = compose(ctx)
+        # Real-LLM phrasing of the customer-facing message when a model is available, and
+        # only for normal replies (safety/escalation wording stays deterministic).
+        if (
+            self._llm.has_real_provider
+            and payload.resolution_status in ("resolved", "degraded")
+            and not ctx.degraded
+        ):
+            with contextlib.suppress(LLMError):
+                payload.message = await self._phrase(ctx, payload)  # else keep deterministic draft
+        return payload
+
+    async def _phrase(self, ctx: SynthesisContext, payload: ResponsePayload) -> str:
+        facts: list[str] = []
+        for rec in ctx.actions:
+            facts.append(f"- action: {_action_summary(rec, ctx.language)}")
+        for p in ctx.passages[:3]:
+            facts.append(f"- source {p.citation}: {p.text}")
+        if not facts:
+            facts.append(f"- draft: {payload.message}")
+        prompt = _PHRASING_PROMPT.format(
+            lang=_LANG_NAME.get(ctx.language, "English"), facts="\n".join(facts)
+        )
         messages = [
-            Message(role="system", content=_SYSTEM_PROMPT),
-            Message(role="user", content=ctx.model_dump_json()),
+            Message(role="system", content=prompt),
+            Message(role="user", content=ctx.message),
         ]
-        return await self._llm.structured(messages, ResponsePayload)
+        text = await self._llm.complete(messages, max_tokens=1500)
+        return text.strip() or payload.message

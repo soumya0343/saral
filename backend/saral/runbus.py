@@ -19,7 +19,15 @@ from saral.schemas import RunRequest, TraceEvent
 
 @lru_cache
 def get_redis() -> redis.Redis:
-    return redis.from_url(get_settings().redis_url, decode_responses=True)
+    # socket_timeout=None so blocking reads (XREADGROUP/pubsub) never raise a read timeout;
+    # health checks keep idle connections alive.
+    return redis.from_url(
+        get_settings().redis_url,
+        decode_responses=True,
+        socket_timeout=None,
+        socket_keepalive=True,
+        health_check_interval=30,
+    )
 
 
 def trace_channel(conversation_id: str) -> str:

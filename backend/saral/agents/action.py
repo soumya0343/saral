@@ -20,7 +20,7 @@ from saral.tools.mock_backend import ToolError
 
 log = get_logger(__name__)
 
-_STATE_CHANGING = {"update_contact", "raise_ticket"}
+_STATE_CHANGING = {"update_contact", "raise_ticket", "file_claim"}
 
 
 class ActionAgent:
@@ -48,7 +48,10 @@ class ActionAgent:
             claim_id = entities.get("claim_id")
             if not claim_id:
                 return ActionRecord(
-                    tool=action, needs_clarification="Which claim ID should I check?"
+                    tool=action,
+                    needs_clarification=(
+                        "You don't have any claims on file yet. Would you like to file one?"
+                    ),
                 )
             args = {"claim_id": claim_id}
             call = lambda: mb.get_claim_status(claim_id)  # noqa: E731
@@ -78,6 +81,11 @@ class ActionAgent:
             subject = (message[:60] + "…") if len(message) > 60 else message
             args = {"user_id": user_id, "subject": subject}
             call = lambda: mb.raise_ticket(user_id, subject, message, idempotency_key=idem)  # noqa: E731
+
+        elif action == "file_claim":
+            subject = (message[:80] + "…") if len(message) > 80 else message
+            args = {"user_id": user_id, "subject": subject}
+            call = lambda: mb.file_claim(user_id, subject, idempotency_key=idem)  # noqa: E731
 
         else:
             return ActionRecord(tool=action, error=f"unknown action '{action}'")

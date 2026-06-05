@@ -6,6 +6,10 @@ added in later phases.
 
 from __future__ import annotations
 
+import asyncio
+import contextlib
+from collections.abc import AsyncIterator
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -19,6 +23,23 @@ from saral.logging import configure_logging, get_logger
 log = get_logger(__name__)
 
 
+@contextlib.asynccontextmanager
+async def _lifespan(app: FastAPI) -> AsyncIterator[None]:
+    task: asyncio.Task | None = None
+    if get_settings().run_worker_inproc:
+        from saral.worker.main import run as worker_run
+
+        task = asyncio.create_task(worker_run())
+        log.info("worker.inproc_started")
+    try:
+        yield
+    finally:
+        if task:
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
+
+
 def create_app() -> FastAPI:
     configure_logging()
     settings = get_settings()
@@ -27,6 +48,7 @@ def create_app() -> FastAPI:
         title="Saral",
         version=__version__,
         description="Multilingual multi-agent customer-support resolution engine",
+        lifespan=_lifespan,
     )
     app.add_middleware(RequestIDMiddleware)
     app.add_middleware(

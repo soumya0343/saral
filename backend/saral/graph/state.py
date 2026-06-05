@@ -32,6 +32,7 @@ class RunState(BaseModel):
     user_id: str
     raw_message: str
     history: list[HistoryTurn] = Field(default_factory=list)
+    known_entities: dict[str, Any] = Field(default_factory=dict)
 
     language: Language | None = None
     intents: list[Intent] = Field(default_factory=list)

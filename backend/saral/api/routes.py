@@ -16,12 +16,36 @@ from saral.db.models import Conversation, Message
 from saral.db.session import get_session
 from saral.runbus import enqueue_run, subscribe_trace
 from saral.schemas import HistoryTurn, RunRequest
+from saral.tools import mock_backend as mb
 
 router = APIRouter()
 
 
+class IdentifyCustomer(BaseModel):
+    name: str
+    mobile: str | None = None
+    email: str | None = None
+
+
+class CustomerOut(BaseModel):
+    user_id: str
+    name: str
+    returning: bool
+    policy_id: str | None = None
+    claim_id: str | None = None
+
+
 class StartConversation(BaseModel):
     user_id: str
+
+
+@router.post("/customers", response_model=CustomerOut, tags=["customers"])
+async def identify_customer(body: IdentifyCustomer) -> CustomerOut:
+    try:
+        result = mb.identify_customer(body.name, body.mobile, body.email)
+    except mb.ToolError as e:
+        raise HTTPException(status_code=400, detail=str(e)) from e
+    return CustomerOut(**result)
 
 
 class ConversationOut(BaseModel):
@@ -106,6 +130,7 @@ async def send_message(
             user_id=convo.user_id,
             message=body.content,
             history=history,
+            known_entities=mb.get_customer_context(convo.user_id),
         )
     )
     return MessageAccepted(

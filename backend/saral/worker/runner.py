@@ -23,6 +23,7 @@ async def execute_run(req: RunRequest) -> RunState:
         user_id=req.user_id,
         raw_message=req.message,
         history=req.history,
+        known_entities=req.known_entities,
     )
     # Resume from a checkpoint if this run was interrupted mid-flight (worker crash).
     snapshot = await graph.aget_state(config)

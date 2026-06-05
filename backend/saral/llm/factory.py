@@ -42,6 +42,11 @@ class FallbackLLM:
     def available(self) -> bool:
         return any(p.available for p in self.providers)
 
+    @property
+    def has_real_provider(self) -> bool:
+        """True if a non-stub provider is configured + available (a real model is reachable)."""
+        return any(p.available and p.name != "stub" for p in self.providers)
+
     async def complete(self, messages: list[Message], *, max_tokens: int = 1024) -> str:
         return await self._run("complete", messages, max_tokens=max_tokens)
 

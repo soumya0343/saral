@@ -143,3 +143,5 @@ class RunRequest(BaseModel):
     user_id: str
     message: str
     history: list[HistoryTurn] = Field(default_factory=list)  # short-term memory (last N turns)
+    # Customer's own ids (policy_id/claim_id) so "my claim status" resolves without an ID.
+    known_entities: dict[str, Any] = Field(default_factory=dict)

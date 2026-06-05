@@ -52,10 +52,12 @@ _STATUS_FROM_RESOLUTION = {
 
 async def triage_node(state: RunState) -> dict:
     result = await _triage.run(state.raw_message)
+    # Fill gaps from the customer's known ids; anything detected in the message wins.
+    entities = {**state.known_entities, **result.entities}
     return {
         "language": result.language,
         "intents": result.intents,
-        "entities": result.entities,
+        "entities": entities,
         "step_count": 1,
     }
 

@@ -11,7 +11,6 @@ from __future__ import annotations
 import re
 
 from saral.llm.base import Message
-from saral.llm.factory import get_llm
 from saral.llm.stub import register_structured_handler
 from saral.schemas import Intent, IntentResult, IntentType, Language
 
@@ -42,6 +41,11 @@ _UPDATE_CONTACT = {
 _RAISE_TICKET = {
     "raise ticket", "raise a ticket", "file complaint", "register complaint",
     "ticket banao", "शिकायत", "complaint darj", "open ticket",
+}
+_FILE_CLAIM = {
+    "file a claim", "file claim", "lodge a claim", "lodge claim", "register a claim",
+    "raise a claim", "new claim", "claim file", "claim lodge", "claim dakhil",
+    "claim karna", "नया क्लेम", "क्लेम दर्ज", "क्लेम फाइल",
 }
 _INFORMATION = {
     "cover", "coverage", "covered", "policy detail", "policy details",
@@ -107,6 +111,8 @@ def classify_intents(text: str) -> list[Intent]:
         intents.append(Intent(type=IntentType.ACTION, action="update_contact", confidence=0.9))
     if _hits(lower, {k.lower() for k in _RAISE_TICKET}):
         intents.append(Intent(type=IntentType.ACTION, action="raise_ticket", confidence=0.85))
+    if _hits(lower, {k.lower() for k in _FILE_CLAIM}):
+        intents.append(Intent(type=IntentType.ACTION, action="file_claim", confidence=0.9))
     has_claim_id = bool(_CLAIM_RE.search(text))
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
         "क्लेम" in text and "स्टेटस" in text
@@ -155,14 +161,15 @@ _SYSTEM_PROMPT = (
 
 
 class TriageAgent:
+    """Intent classification is deterministic (TRD §11.3: correctness over flexibility).
+
+    Routing and entity extraction drive compliance and tool selection, so we use the
+    keyword/regex classifier rather than an LLM — it is fast, reproducible, and exactly what
+    the eval suite validates. The LLM path remains available via the stub-registered handler
+    for experimentation.
+    """
+
     name = "triage"
 
-    def __init__(self) -> None:
-        self._llm = get_llm()
-
     async def run(self, message: str) -> IntentResult:
-        messages = [
-            Message(role="system", content=_SYSTEM_PROMPT),
-            Message(role="user", content=message),
-        ]
-        return await self._llm.structured(messages, IntentResult)
+        return classify(message)

@@ -31,6 +31,7 @@ async def persist_run(state: RunState) -> None:
                 step_count=state.step_count,
             )
         )
+        await session.flush()  # ensure agent_runs row exists before FK-dependent inserts
         for rec in state.actions:
             session.add(
                 ActionRecordRow(
