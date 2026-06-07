@@ -50,18 +50,27 @@ def requires_step_up(action: str) -> bool:
     return action in _STEP_UP_ACTIONS
 
 
-def domains_for_intents(intents: list[Intent]) -> set[DataDomain]:
-    """Union of data domains authorized by the classified intents. Default-deny."""
+def domains_for_intents(intents: list[Intent], include_history: bool = False) -> set[DataDomain]:
+    """Union of data domains authorized by the classified intents. Default-deny.
+
+    Long-term memory (CONTEXT 'Long-term memory') is the Interaction-history domain retrieved
+    *on demand*: it is authorized only when the customer's information question explicitly seeks
+    past interactions (`include_history`), never eagerly — preserving data minimization.
+    """
     allowed: set[DataDomain] = set()
+    has_info = False
     for intent in intents:
         if intent.type == IntentType.INFORMATION:
             allowed |= _INFORMATION_DOMAINS
+            has_info = True
         elif intent.type == IntentType.ACTION and intent.action:
             allowed |= _ACTION_DOMAINS.get(intent.action, set())
         # COMPLAINT / SMALL_TALK / UNKNOWN authorize no customer-data domain (default-deny).
+    if include_history and has_info:
+        allowed |= {DataDomain.INTERACTION_HISTORY}
     return allowed
 
 
-def allowed_domains(intents: list[Intent]) -> list[str]:
+def allowed_domains(intents: list[Intent], include_history: bool = False) -> list[str]:
     """String form for storage / pre-filtering."""
-    return sorted(str(d) for d in domains_for_intents(intents))
+    return sorted(str(d) for d in domains_for_intents(intents, include_history))

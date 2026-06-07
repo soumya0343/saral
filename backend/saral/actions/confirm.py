@@ -9,8 +9,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from typing import Literal
 
+from saral.config import get_settings
 from saral.schemas import Intent, PendingWrite
 
 # Multilingual yes/no for confirmation (CONTEXT 'Confirmation resume').
@@ -85,4 +87,14 @@ def build_pending_write(
         read_back=_read_back(tool, field, value),
         idempotency_key=idempotency_key(conversation_id, tool, args, intent_nonce),
         intent_nonce=intent_nonce,
+        created_at=time.time(),
     )
+
+
+def is_stale(pw: PendingWrite, now: float | None = None) -> bool:
+    """True if the pending write is past its TTL — execution authority is mortal (CONTEXT
+    'Pending write'): a stale write is never auto-fired; resume re-earns step-up + confirm."""
+    if pw.created_at is None:
+        return False
+    ttl = get_settings().pending_write_ttl_s
+    return (now or time.time()) - pw.created_at > ttl

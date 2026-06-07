@@ -68,6 +68,13 @@ _INFORMATION = {
 }
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
+# History-seeking phrasing: authorizes the Interaction-history domain on demand (long-term
+# memory, CONTEXT). Never eager — only when the customer references their past interactions.
+_HISTORY = {
+    "last time", "previously", "previous", "earlier", "before", "my history",
+    "past complaint", "past ticket", "last call", "spoke earlier", "told you",
+    "pichli baar", "pehle", "pichhle", "last conversation", "इतिहास", "पिछली बार", "पहले",
+}
 
 # --- Entity extractors ---
 
@@ -107,6 +114,9 @@ def extract_entities(text: str) -> dict:
         entities["mobile"] = m.group(1)
     if m := _EMAIL_RE.search(text):
         entities["email"] = m.group(1)
+    # On-demand long-term memory signal: the customer is referencing past interactions.
+    if _hits(text.lower(), _HISTORY):
+        entities["wants_history"] = True
     return entities
 
 

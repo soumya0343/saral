@@ -37,3 +37,6 @@ data/eval_reports/
 .claude/
 .agents/
 skills-lock.json
+
+# Docs
+docs/

@@ -161,6 +161,10 @@ async def send_message(
     convo = await db.get(Conversation, conversation_id)
     if convo is None:
         raise HTTPException(status_code=404, detail="conversation not found")
+    # Consent gate (DPDP): processing proceeds only while consent is granted (CONTEXT
+    # 'Consent status'). A withdrawn conversation is closed to further processing.
+    if convo.consent_status == "withdrawn":
+        raise HTTPException(status_code=403, detail="consent withdrawn; processing halted")
 
     user_id, tenant_id, auth_level, _ = _claims_or_refresh(convo)
     history = await _history(db, conversation_id)
@@ -275,3 +279,30 @@ async def get_history(
         MessageOut(id=m.id, role=m.role, content=m.content, sequence_num=m.sequence_num)
         for m in rows
     ]
+
+
+@router.delete("/users/{user_id}/data", tags=["compliance"])
+async def erase_user(user_id: str) -> dict:
+    """Right-to-erasure (DPDP): tombstone the customer's PII, withdraw consent. The hash-chained
+    audit log is left intact (it holds no raw PII), so the 7-year hold stays erasure-compatible."""
+    from saral.compliance.erasure import erase_user_data
+
+    counts = await erase_user_data(user_id)
+    return {"user_id": user_id, "erased": counts, "consent_status": "withdrawn"}
+
+
+class ResolveEscalation(BaseModel):
+    operator_id: str
+    reply: str | None = None
+
+
+@router.post("/escalations/{escalation_id}/resolve", tags=["escalations"])
+async def resolve_escalation_route(escalation_id: str, body: ResolveEscalation) -> dict:
+    """Record which operator handled an escalation, and when (ADR-0001: operator is audit-only —
+    this writes audit metadata; an operator never drives a turn or fires a tool)."""
+    from saral.db.repository import resolve_escalation
+
+    ok = await resolve_escalation(escalation_id, body.operator_id, body.reply)
+    if not ok:
+        raise HTTPException(status_code=404, detail="escalation not found")
+    return {"escalation_id": escalation_id, "handled_by": body.operator_id, "status": "resolved"}

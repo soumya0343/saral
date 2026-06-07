@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from saral.config import get_settings
+from saral.eval.agreement import cohens_kappa
 from saral.eval.schemas import (
     Category,
     JudgeVerdict,
@@ -115,12 +117,24 @@ def summarize(
     judge_human = (
         sum(1 for r in agree_total if _agrees(r)) / len(agree_total) if agree_total else None
     )
-    # Per-language judge-vs-human agreement (TRD §18.2): trust the judge per language.
+    # Per-language judge-vs-human agreement + chance-corrected Cohen's kappa (TRD §18.2,
+    # CONTEXT 'Judge'). A language is trusted only when kappa is defined AND >= floor.
+    floor = get_settings().judge_kappa_floor
     by_lang: dict[str, float] = {}
+    kappa_by_lang: dict[str, float] = {}
+    untrusted: list[str] = []
     langs = {lang_by_id[r.scenario_id] for r in agree_total}
     for lang in langs:
         members = [r for r in agree_total if lang_by_id[r.scenario_id] == lang]
         by_lang[lang] = round(sum(1 for r in members if _agrees(r)) / len(members), 3)
+        pairs = [(bool(r.judge and r.judge.passed), labels[r.scenario_id]) for r in members]
+        kappa = cohens_kappa(pairs)
+        if kappa is None or kappa < floor:
+            untrusted.append(lang)  # un-validated -> resolution metric needs human review
+        if kappa is not None:
+            kappa_by_lang[lang] = kappa
+    # Languages with labels but no judge validation at all are also untrusted.
+    untrusted = sorted(set(untrusted))
 
     latencies = [float(r.latency_ms) for r in results]
     return MetricSummary(
@@ -140,4 +154,6 @@ def summarize(
         else 0.0,
         judge_human_agreement=round(judge_human, 3) if judge_human is not None else None,
         judge_agreement_by_language=by_lang,
+        judge_kappa_by_language=kappa_by_lang,
+        judge_untrusted_languages=untrusted,
     )

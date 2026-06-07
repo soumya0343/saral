@@ -13,13 +13,7 @@ from rank_bm25 import BM25Okapi
 
 from saral.config import get_settings
 from saral.logging import get_logger
-from saral.rag.embedder import (
-    Embedder,
-    HashingEmbedder,
-    SentenceTransformerEmbedder,
-    cosine,
-    tokenize,
-)
+from saral.rag.embedder import cosine, get_embedder, tokenize
 from saral.schemas import Passage
 
 log = get_logger(__name__)
@@ -39,15 +33,9 @@ def _chunk_document(text: str) -> list[str]:
     return chunks
 
 
-def _make_embedder() -> Embedder:
-    if get_settings().embedder == "sentence-transformer":
-        return SentenceTransformerEmbedder()
-    return HashingEmbedder()
-
-
 class HybridIndex:
     def __init__(self, corpus_dir: str | Path) -> None:
-        self.embedder = _make_embedder()
+        self.embedder = get_embedder()
         self.passages: list[Passage] = []
         self._vectors: list[list[float]] = []
         self._bm25: BM25Okapi | None = None
@@ -62,7 +50,7 @@ class HybridIndex:
             text = path.read_text(encoding="utf-8")
             for i, chunk in enumerate(_chunk_document(text)):
                 self.passages.append(Passage(doc_id=path.name, chunk_id=i, text=chunk))
-                self._vectors.append(self.embedder.embed(chunk))
+                self._vectors.append(self.embedder.embed_document(chunk))
                 tokenized.append(tokenize(chunk))
         if tokenized:
             self._bm25 = BM25Okapi(tokenized)
@@ -73,13 +61,11 @@ class HybridIndex:
             return []
         top_k = top_k or get_settings().retrieval_top_k
 
-        # Dense ranking
-        qv = self.embedder.embed(query)
-        dense = sorted(
-            range(len(self.passages)),
-            key=lambda i: cosine(qv, self._vectors[i]),
-            reverse=True,
-        )
+        # Dense ranking + per-passage cosine (the surfaced relevance score, used by the
+        # retrieval score-floor groundedness gate — ADR-0002/FR-18).
+        qv = self.embedder.embed_query(query)
+        cos = {i: cosine(qv, self._vectors[i]) for i in range(len(self.passages))}
+        dense = sorted(cos, key=lambda i: cos[i], reverse=True)
         # Lexical ranking
         lexical = dense
         if self._bm25 is not None:
@@ -94,11 +80,11 @@ class HybridIndex:
             fused[idx] = fused.get(idx, 0.0) + 1.0 / (RRF_K + rank)
 
         ranked = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
-        out: list[Passage] = []
-        for idx, score in ranked:
-            p = self.passages[idx].model_copy(update={"score": round(score, 6)})
-            out.append(p)
-        return out
+        # Order by RRF; surface the dense cosine as the relevance score.
+        return [
+            self.passages[idx].model_copy(update={"score": round(cos[idx], 6)})
+            for idx, _ in ranked
+        ]
 
 
 @lru_cache

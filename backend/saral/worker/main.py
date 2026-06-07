@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import socket
+import time
 
 from saral.config import get_settings
 from saral.logging import get_logger
@@ -16,6 +17,8 @@ from saral.schemas import RunRequest
 from saral.worker.runner import execute_run
 
 log = get_logger(__name__)
+
+_REAP_INTERVAL_S = 300  # how often to sweep for orphaned suspended conversations
 
 
 async def run() -> None:
@@ -30,7 +33,13 @@ async def run() -> None:
         consumer=consumer,
     )
 
+    last_reap = 0.0
     while True:
+        # 0) Periodically abandon orphaned suspended conversations (ADR-0004 pending-write TTL).
+        if time.time() - last_reap > _REAP_INTERVAL_S:
+            await _reap()
+            last_reap = time.time()
+
         # 1) Reclaim messages pending on dead/stuck consumers (XAUTOCLAIM). The checkpointer
         #    lets execute_run resume these mid-run rather than restart (TRD §15).
         await _reclaim(r, settings, consumer)
@@ -47,6 +56,16 @@ async def run() -> None:
             continue
         for _stream, entries in resp:
             await _process_entries(r, settings, entries)
+
+
+async def _reap() -> None:
+    """Best-effort orphan sweep; never crash the worker loop."""
+    try:
+        from saral.jobs.reaper import reap_orphans
+
+        await reap_orphans()
+    except Exception as e:  # noqa: BLE001
+        log.warning("worker.reap_failed", error=str(e))
 
 
 async def _reclaim(r, settings, consumer) -> None:

@@ -145,6 +145,8 @@ def _log_summary(report: EvalReport) -> None:
         groundedness=s.groundedness,
         cross_lingual=s.cross_lingual_consistency,
         p95_ms=s.latency_p95_ms,
+        judge_kappa=s.judge_kappa_by_language,
+        judge_untrusted=s.judge_untrusted_languages,
         regressions=report.regressions,
     )
 
@@ -165,6 +167,13 @@ def main() -> None:
     print(f"  latency p50/p95 ms         {s.latency_p50_ms}/{s.latency_p95_ms}")
     if s.judge_human_agreement is not None:
         print(f"  judge_human_agreement      {s.judge_human_agreement:.2%}")
+    if s.judge_kappa_by_language:
+        print(f"  judge_kappa (per lang)     {s.judge_kappa_by_language}")
+    if s.judge_untrusted_languages:
+        print(
+            f"  judge UNTRUSTED (kappa<floor): {s.judge_untrusted_languages}"
+            " — resolution metric needs human review"
+        )
     if report.regressions:
         print(f"  REGRESSIONS vs {report.prior_version}: {report.regressions}")
     else:

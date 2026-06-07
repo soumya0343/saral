@@ -47,9 +47,7 @@ class ActionAgent:
                 if pending_write is not None and pending_write.tool == intent.action:
                     records.append(await self._execute_pending(pending_write, user_id, message))
                 continue
-            records.append(
-                await self._dispatch(intent.action, entities, user_id, run_id, message)
-            )
+            records.append(await self._dispatch(intent.action, entities))
         return records
 
     async def _execute_pending(
@@ -74,10 +72,11 @@ class ActionAgent:
             return ActionRecord(tool=pw.tool, error=f"unknown write '{pw.tool}'")
         return await self._invoke(pw.tool, args, idem, call)
 
-    async def _dispatch(
-        self, action: str, entities: dict, user_id: str, run_id: str, message: str
-    ) -> ActionRecord:
-        idem = f"{run_id}:{action}" if action in _STATE_CHANGING else None
+    async def _dispatch(self, action: str, entities: dict) -> ActionRecord:
+        # Reads only: state-changing actions never reach here — they execute via
+        # _execute_pending() under the conversation-anchored idempotency key (run() guard
+        # above; ADR-0004). Reads need no idempotency key.
+        idem = None
 
         # Resolve arguments / required-arg checks.
         if action == "get_claim_status":
@@ -101,40 +100,10 @@ class ActionAgent:
             args = {"policy_id": policy_id}
             call = lambda: mb.get_policy_details(policy_id)  # noqa: E731
 
-        elif action == "update_contact":
-            field, value = self._resolve_contact_change(entities)
-            if not field:
-                return ActionRecord(
-                    tool=action,
-                    needs_clarification=(
-                        "What should I update — mobile or email — and to what value?"
-                    ),
-                )
-            args = {"user_id": user_id, "field": field, "value": value}
-            call = lambda: mb.update_contact(user_id, field, value, idempotency_key=idem)  # noqa: E731
-
-        elif action == "raise_ticket":
-            subject = (message[:60] + "…") if len(message) > 60 else message
-            args = {"user_id": user_id, "subject": subject}
-            call = lambda: mb.raise_ticket(user_id, subject, message, idempotency_key=idem)  # noqa: E731
-
-        elif action == "file_claim":
-            subject = (message[:80] + "…") if len(message) > 80 else message
-            args = {"user_id": user_id, "subject": subject}
-            call = lambda: mb.file_claim(user_id, subject, idempotency_key=idem)  # noqa: E731
-
         else:
             return ActionRecord(tool=action, error=f"unknown action '{action}'")
 
         return await self._invoke(action, args, idem, call)
-
-    @staticmethod
-    def _resolve_contact_change(entities: dict) -> tuple[str | None, str | None]:
-        if entities.get("mobile"):
-            return "mobile", entities["mobile"]
-        if entities.get("email"):
-            return "email", entities["email"]
-        return None, None
 
     async def _invoke(self, action, args, idem, call) -> ActionRecord:
         timeout = get_settings().tool_timeout_s

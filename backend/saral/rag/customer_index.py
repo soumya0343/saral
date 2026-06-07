@@ -20,13 +20,7 @@ from rank_bm25 import BM25Okapi
 
 from saral.config import get_settings
 from saral.logging import get_logger
-from saral.rag.embedder import (
-    Embedder,
-    HashingEmbedder,
-    SentenceTransformerEmbedder,
-    cosine,
-    tokenize,
-)
+from saral.rag.embedder import cosine, get_embedder, tokenize
 from saral.schemas import Passage
 
 log = get_logger(__name__)
@@ -44,12 +38,6 @@ def _chunk(text: str) -> list[str]:
     return out
 
 
-def _make_embedder() -> Embedder:
-    if get_settings().embedder == "sentence-transformer":
-        return SentenceTransformerEmbedder()
-    return HashingEmbedder()
-
-
 class _CustomerPassage:
     __slots__ = ("passage", "customer_id", "vector", "tokens")
 
@@ -62,7 +50,7 @@ class _CustomerPassage:
 
 class CustomerIndex:
     def __init__(self, customers_dir: str | Path) -> None:
-        self.embedder = _make_embedder()
+        self.embedder = get_embedder()
         self.items: list[_CustomerPassage] = []
         self._load(Path(customers_dir))
 
@@ -94,7 +82,7 @@ class CustomerIndex:
                     )
                     self.items.append(
                         _CustomerPassage(
-                            passage, cid, self.embedder.embed(chunk), tokenize(chunk)
+                            passage, cid, self.embedder.embed_document(chunk), tokenize(chunk)
                         )
                     )
         log.info("rag.customer_index.built", passages=len(self.items))
@@ -121,12 +109,9 @@ class CustomerIndex:
         if not candidates:
             return []
 
-        qv = self.embedder.embed(query)
-        dense = sorted(
-            range(len(candidates)),
-            key=lambda i: cosine(qv, candidates[i].vector),
-            reverse=True,
-        )
+        qv = self.embedder.embed_query(query)
+        cos = {i: cosine(qv, candidates[i].vector) for i in range(len(candidates))}
+        dense = sorted(cos, key=lambda i: cos[i], reverse=True)
         bm = BM25Okapi([c.tokens for c in candidates])
         scores = bm.get_scores(tokenize(query))
         lexical = sorted(range(len(candidates)), key=lambda i: scores[i], reverse=True)
@@ -138,9 +123,10 @@ class CustomerIndex:
             fused[idx] = fused.get(idx, 0.0) + 1.0 / (RRF_K + rank)
 
         ranked = sorted(fused.items(), key=lambda kv: kv[1], reverse=True)[:top_k]
+        # Order by RRF; surface the dense cosine as the relevance score (score-floor gate).
         return [
-            candidates[idx].passage.model_copy(update={"score": round(score, 6)})
-            for idx, score in ranked
+            candidates[idx].passage.model_copy(update={"score": round(cos[idx], 6)})
+            for idx, _ in ranked
         ]
 
 

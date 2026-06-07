@@ -73,7 +73,7 @@ _SYSTEM_PROMPT = (
 
 class Judge:
     def __init__(self) -> None:
-        self._llm = get_llm()
+        self._llm = get_llm("judge")  # pinned chain; no mid-suite swap (ADR-0003)
 
     async def evaluate(self, context: dict) -> JudgeVerdict:
         messages = [

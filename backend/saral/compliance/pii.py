@@ -1,8 +1,9 @@
-"""PII detection + redaction.
+"""PII detection + redaction (the Redact gate, CONTEXT 'Redact gate').
 
-Default `RegexRedactor` is deterministic and dependency-free — it covers the high-risk
-Indian PII types (mobile, email, Aadhaar, PAN, card) and is reproducible for eval. A
-`PresidioRedactor` (NER-backed, catches names/locations) is available via the `pii` extra.
+`PresidioRedactor` (NER-backed: catches names/locations) is the production redact gate, layered
+over the regex patterns so India-specific PII (Aadhaar/PAN/mobile) Presidio's default NER misses
+is still caught. It needs the `pii` extra; if that import fails, `get_redactor()` falls back to
+the dependency-free `RegexRedactor`. CI/eval default to regex (deterministic + reproducible).
 
 Redaction runs before storage and before any logged preview (FR-6, NFR-4).
 """
@@ -13,6 +14,9 @@ import re
 from typing import Protocol
 
 from saral.config import get_settings
+from saral.logging import get_logger
+
+log = get_logger(__name__)
 
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     ("EMAIL", re.compile(r"\b[\w.+-]+@[\w-]+\.[\w.-]+\b")),
@@ -40,7 +44,12 @@ class RegexRedactor:
 
 
 class PresidioRedactor:
-    """NER-backed redactor (requires the `pii` extra: presidio-analyzer/anonymizer)."""
+    """NER-backed redactor (requires the `pii` extra: presidio-analyzer/anonymizer).
+
+    Layered over the regex patterns: the regex pass first catches India-specific PII
+    (Aadhaar/PAN/mobile) that Presidio's default English NER does not, then Presidio adds
+    names/locations/etc.
+    """
 
     def __init__(self) -> None:
         from presidio_analyzer import AnalyzerEngine
@@ -48,12 +57,15 @@ class PresidioRedactor:
 
         self._analyzer = AnalyzerEngine()
         self._anonymizer = AnonymizerEngine()
+        self._regex = RegexRedactor()
 
     def redact(self, text: str) -> tuple[str, list[str]]:
-        results = self._analyzer.analyze(text=text, language="en")
-        found = sorted({r.entity_type for r in results})
-        anonymized = self._anonymizer.anonymize(text=text, analyzer_results=results)
-        return anonymized.text, found
+        out, found = self._regex.redact(text)  # India-specific PII first
+        results = self._analyzer.analyze(text=out, language="en")
+        if results:
+            found = sorted(set(found) | {r.entity_type for r in results})
+            out = self._anonymizer.anonymize(text=out, analyzer_results=results).text
+        return out, found
 
 
 _redactor: PIIRedactor | None = None
@@ -62,9 +74,14 @@ _redactor: PIIRedactor | None = None
 def get_redactor() -> PIIRedactor:
     global _redactor
     if _redactor is None:
-        _redactor = (
-            PresidioRedactor() if get_settings().pii_backend == "presidio" else RegexRedactor()
-        )
+        if get_settings().pii_backend == "presidio":
+            try:
+                _redactor = PresidioRedactor()
+            except Exception as e:  # noqa: BLE001 — missing `pii` extra / model
+                log.warning("pii.presidio_unavailable", error=str(e), fallback="regex")
+                _redactor = RegexRedactor()
+        else:
+            _redactor = RegexRedactor()
     return _redactor
 
 

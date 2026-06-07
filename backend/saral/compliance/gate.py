@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from saral.compliance.authz import check_authorization
 from saral.compliance.injection import detect_injection
-from saral.schemas import ComplianceDecision, Intent, IntentType
+from saral.schemas import ComplianceDecision, Intent, IntentType, ReasonCode
 
 
 class ComplianceGate:
@@ -24,7 +24,12 @@ class ComplianceGate:
         is_injection, reason = detect_injection(message)
         if is_injection:
             decisions.append(
-                ComplianceDecision(decision="block", reason=reason, actor="injection_guard")
+                ComplianceDecision(
+                    decision="block",
+                    reason=reason,
+                    actor="injection_guard",
+                    reason_code=ReasonCode.INJECTION_DETECTED,
+                )
             )
             # A detected injection blocks the whole run; no point authorizing actions.
             return decisions
@@ -39,7 +44,11 @@ class ComplianceGate:
                 if not allowed:
                     decisions.append(
                         ComplianceDecision(
-                            decision="block", reason=why, actor="authz", action=action_name
+                            decision="block",
+                            reason=why,
+                            actor="authz",
+                            action=action_name,
+                            reason_code=ReasonCode.OWNERSHIP_DENIED,
                         )
                     )
                     return decisions
@@ -54,12 +63,18 @@ class ComplianceGate:
                     reason=why,
                     actor="authz",
                     action=intent.action,
+                    reason_code=ReasonCode.AUTHORIZED if allowed else ReasonCode.AUTHZ_DENIED,
                 )
             )
 
         if not decisions:
             decisions.append(
-                ComplianceDecision(decision="allow", reason="no gated actions", actor="authz")
+                ComplianceDecision(
+                    decision="allow",
+                    reason="no gated actions",
+                    actor="authz",
+                    reason_code=ReasonCode.NO_GATED_ACTIONS,
+                )
             )
         return decisions
 

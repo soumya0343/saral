@@ -10,6 +10,7 @@ The deterministic stub composer doubles as the no-key path and keeps eval reprod
 from __future__ import annotations
 
 import contextlib
+import re
 
 from pydantic import BaseModel, Field
 
@@ -140,6 +141,30 @@ def compose(ctx: SynthesisContext) -> ResponsePayload:
     )
 
 
+# --- Grounding check (CONTEXT "Grounding check") ---
+# Every number/amount/id in the LLM-phrased reply must trace to a retrieved passage or action
+# result; otherwise we discard the phrasing and keep the deterministic grounded draft. The
+# factual core is always deterministic — the LLM only rephrases tone, never facts.
+
+_NUM_RE = re.compile(r"\d[\d,]*(?:\.\d+)?")  # amounts: 12000, 1,50,000, 80, 12.5
+_ID_RE = re.compile(r"\b[A-Z]{2,}[-/]?\d{2,}\b")  # ids: POL-123, CLM4567, TKT-9
+_DEVA_DIGITS = str.maketrans("०१२३४५६७८९", "0123456789")
+
+
+def _grounded(text: str, facts: str) -> bool:
+    """True if every multi-digit number and id in `text` appears in the source `facts`."""
+    reply = text.translate(_DEVA_DIGITS)
+    src = facts.translate(_DEVA_DIGITS).replace(",", "")
+    for m in _NUM_RE.findall(reply):
+        digits = m.replace(",", "")
+        # Skip trivial single-digit counts ("1-3 sentences"); flag amounts/percentages/ids.
+        if len(digits.replace(".", "")) < 2:
+            continue
+        if digits not in src:
+            return False
+    return all(m in facts for m in _ID_RE.findall(reply))
+
+
 def _stub_handler(messages: list[Message]) -> ResponsePayload:
     raw = next((m.content for m in reversed(messages) if m.role == "user"), "{}")
     ctx = SynthesisContext.model_validate_json(raw)
@@ -171,7 +196,7 @@ class SynthesisAgent:
     name = "synthesis"
 
     def __init__(self) -> None:
-        self._llm = get_llm()
+        self._llm = get_llm("synthesis")  # Hindi-strong Gemini Flash first (ADR-0003)
 
     async def run(self, ctx: SynthesisContext) -> ResponsePayload:
         # Deterministic structure (status / citations / actions) — never delegated.
@@ -184,10 +209,16 @@ class SynthesisAgent:
             and not ctx.degraded
         ):
             with contextlib.suppress(LLMError):
-                payload.message = await self._phrase(ctx, payload)  # else keep deterministic draft
+                facts = self._facts(ctx, payload)
+                phrased = await self._phrase(ctx, facts)
+                # Grounding gate: only accept LLM phrasing whose facts trace to the sources;
+                # otherwise keep the deterministic grounded draft (CONTEXT "Grounding check").
+                if phrased and _grounded(phrased, "\n".join(facts) + " " + payload.message):
+                    payload.message = phrased
         return payload
 
-    async def _phrase(self, ctx: SynthesisContext, payload: ResponsePayload) -> str:
+    @staticmethod
+    def _facts(ctx: SynthesisContext, payload: ResponsePayload) -> list[str]:
         facts: list[str] = []
         for rec in ctx.actions:
             facts.append(f"- action: {_action_summary(rec, ctx.language)}")
@@ -195,6 +226,9 @@ class SynthesisAgent:
             facts.append(f"- source {p.citation}: {p.text}")
         if not facts:
             facts.append(f"- draft: {payload.message}")
+        return facts
+
+    async def _phrase(self, ctx: SynthesisContext, facts: list[str]) -> str:
         prompt = _PHRASING_PROMPT.format(
             lang=_LANG_NAME.get(ctx.language, "English"), facts="\n".join(facts)
         )
@@ -203,4 +237,4 @@ class SynthesisAgent:
             Message(role="user", content=ctx.message),
         ]
         text = await self._llm.complete(messages, max_tokens=1500)
-        return text.strip() or payload.message
+        return text.strip()

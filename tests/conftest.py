@@ -13,3 +13,6 @@ os.environ["LLM_PROVIDER_ORDER"] = "stub"
 os.environ["SARVAM_API_KEY"] = ""
 os.environ["ANTHROPIC_API_KEY"] = ""
 os.environ["STORE_BACKEND"] = "memory"
+# Hashing floor: deterministic + dependency-free, so eval/tests are reproducible and don't
+# pull the multilingual-e5 weights (ADR-0003: hashing is the offline/CI floor).
+os.environ["EMBEDDER"] = "hashing"

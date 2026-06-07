@@ -7,7 +7,9 @@ tokenized (no-raw-PII) audit refs (TRD §16).
 
 from __future__ import annotations
 
-from sqlalchemy import Float, ForeignKey, Index, Integer, String, Text
+from datetime import datetime
+
+from sqlalchemy import DateTime, Float, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
@@ -74,6 +76,10 @@ class AgentRun(Base, TimestampMixin):
     step_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
+    # Terminal close (CONTEXT 'Run'): a run that ends — normally or abnormally — records why
+    # and when, so an abnormal close is never silent context-loss. Null while suspended.
+    close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class ActionRecordRow(Base, TimestampMixin):
@@ -134,6 +140,10 @@ class Escalation(Base, TimestampMixin):
     transcript_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     sla_target: Mapped[str] = mapped_column(String(16), nullable=False)
     operator_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Operator audit (ADR-0001): the operator is audit-only — never a graph actor. We record
+    # who handled the escalation and when, but an operator never drives a turn or fires a tool.
+    handled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
 
 
 class EvalResult(Base, TimestampMixin):

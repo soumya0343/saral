@@ -9,6 +9,7 @@ thread + timeout), so this uses a sync engine.
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 from pathlib import Path
 
@@ -72,6 +73,9 @@ class MIdem(MockBase):
     __tablename__ = "mock_idempotency"
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
+    # Dedup window is tied to the pending-write TTL (ADR-0004): entries past TTL are purged
+    # together (a genuinely new intent gets a fresh nonce -> fresh key, so this never re-fires).
+    created_epoch: Mapped[int] = mapped_column(Integer, default=0)
 
 
 class MMeta(MockBase):
@@ -131,7 +135,22 @@ class Store:
             kwargs.update(connect_args={"check_same_thread": False}, poolclass=StaticPool)
         self.engine = create_engine(url, **kwargs)
         MockBase.metadata.create_all(self.engine)
+        self._ensure_columns()
         self.seed()
+
+    def _ensure_columns(self) -> None:
+        """Best-effort add of columns introduced after a table already exists. The mock store
+        uses create_all (not alembic), so an existing Postgres mock DB won't pick up new columns
+        automatically; this keeps demo DBs working without a manual reset."""
+        from sqlalchemy import text
+
+        with self.engine.begin() as conn:
+            try:
+                conn.execute(
+                    text("ALTER TABLE mock_idempotency ADD COLUMN IF NOT EXISTS created_epoch INTEGER DEFAULT 0")  # noqa: E501
+                )
+            except Exception as e:  # noqa: BLE001 — sqlite lacks IF NOT EXISTS; fresh tables already have it
+                log.debug("store.ensure_columns_skipped", error=str(e))
 
     def seed(self) -> None:
         with Session(self.engine) as s:
@@ -325,7 +344,13 @@ class Store:
                 detail=f"{field} updated",
                 changed={"field": field, "old": old, "new": value},
             )
-            s.add(MIdem(key=idempotency_key, payload=result.model_dump_json()))
+            s.add(
+                MIdem(
+                    key=idempotency_key,
+                    payload=result.model_dump_json(),
+                    created_epoch=int(time.time()),
+                )
+            )
             s.commit()
             return result
 
@@ -342,7 +367,13 @@ class Store:
                 idempotency_key=idempotency_key,
             )
             s.add(MTicket(ticket_id=ticket.ticket_id, user_id=user_id, subject=subject))
-            s.add(MIdem(key=idempotency_key, payload=ticket.model_dump_json()))
+            s.add(
+                MIdem(
+                    key=idempotency_key,
+                    payload=ticket.model_dump_json(),
+                    created_epoch=int(time.time()),
+                )
+            )
             s.commit()
             return ticket
 
@@ -364,7 +395,13 @@ class Store:
             )
             s.add(c)
             claim = self._claim(c)
-            s.add(MIdem(key=idempotency_key, payload=claim.model_dump_json()))
+            s.add(
+                MIdem(
+                    key=idempotency_key,
+                    payload=claim.model_dump_json(),
+                    created_epoch=int(time.time()),
+                )
+            )
             s.commit()
             return claim
 
@@ -412,6 +449,18 @@ class Store:
     def user_exists(self, user_id: str) -> bool:
         with Session(self.engine) as s:
             return s.get(MUser, user_id) is not None
+
+    def purge_idempotency(self, older_than_s: int, now: float | None = None) -> int:
+        """Purge dedup entries past the TTL (dedup window tied to pending-write TTL, ADR-0004)."""
+        cutoff = int((now or time.time()) - older_than_s)
+        with Session(self.engine) as s:
+            n = (
+                s.query(MIdem)
+                .filter(MIdem.created_epoch > 0, MIdem.created_epoch < cutoff)
+                .delete()
+            )
+            s.commit()
+            return n
 
     @staticmethod
     def _context(s: Session, user_id: str) -> dict:

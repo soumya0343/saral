@@ -133,10 +133,16 @@ async def execute_run(req: RunRequest) -> RunState:
             )
         )
         await _persist(final_state)
+    except TimeoutError as e:
+        log.error("run.timeout", run_id=req.run_id, error=str(e))
+        await publish_trace(ev("error", data={"error": str(e)}))
+        final_state.status = "timed_out"  # terminal close, recorded with closed_at (CONTEXT)
+        await _persist(final_state)
     except Exception as e:  # noqa: BLE001 — never hard-crash a run
         log.error("run.error", run_id=req.run_id, error=str(e))
         await publish_trace(ev("error", data={"error": str(e)}))
-        final_state.status = "degraded"
+        final_state.status = "crashed"  # terminal close; crash resume re-runs from checkpoint
+        await _persist(final_state)
     finally:
         await publish_trace(ev("run_finished", data={"status": final_state.status}))
 

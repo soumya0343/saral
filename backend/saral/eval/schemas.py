@@ -77,8 +77,14 @@ class MetricSummary(BaseModel):
     latency_p95_ms: float
     cost_per_run_usd: float
     judge_human_agreement: float | None = None
-    # Judge-vs-human agreement broken out per language (TRD §18.2); floor gates the metric.
+    # Raw judge-vs-human agreement per language (TRD §18.2).
     judge_agreement_by_language: dict[str, float] = Field(default_factory=dict)
+    # Chance-corrected agreement (Cohen's kappa) per language; only languages where it is
+    # defined. The floor (config.judge_kappa_floor) gates trust (CONTEXT 'Judge').
+    judge_kappa_by_language: dict[str, float] = Field(default_factory=dict)
+    # Languages where the judge is NOT validated (kappa undefined or below floor): the
+    # resolution metric there needs human review, not the judge.
+    judge_untrusted_languages: list[str] = Field(default_factory=list)
 
 
 class EvalReport(BaseModel):

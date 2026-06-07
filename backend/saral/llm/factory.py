@@ -1,7 +1,8 @@
-"""LLM client factory + fallback chain.
+"""LLM client factory + per-role fallback chains.
 
-`get_llm()` returns a FallbackLLM that tries providers in the configured order, skipping
-unavailable ones, and falling back to the next on LLMError. The stub is always last.
+`get_llm(role)` returns a FallbackLLM that tries the role's configured providers in order
+(ADR-0003 per-role routing), skipping unavailable ones and falling back to the next on
+LLMError. The stub is always appended last so the system runs with no API keys.
 """
 
 from __future__ import annotations
@@ -14,6 +15,9 @@ from pydantic import BaseModel
 from saral.config import get_settings
 from saral.llm.anthropic import AnthropicProvider
 from saral.llm.base import LLMClient, LLMError, Message
+from saral.llm.cerebras import CerebrasProvider
+from saral.llm.gemini import GeminiProvider
+from saral.llm.groq import GroqProvider
 from saral.llm.sarvam import SarvamProvider
 from saral.llm.stub import StubProvider
 from saral.logging import get_logger
@@ -24,6 +28,9 @@ log = get_logger(__name__)
 _REGISTRY: dict[str, type] = {
     "sarvam": SarvamProvider,
     "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
+    "groq": GroqProvider,
+    "cerebras": CerebrasProvider,
     "stub": StubProvider,
 }
 
@@ -80,10 +87,12 @@ class FallbackLLM:
 
 
 @lru_cache
-def get_llm() -> FallbackLLM:
+def get_llm(role: str = "default") -> FallbackLLM:
+    """Build (and cache) the FallbackLLM for a role's provider chain (ADR-0003)."""
     settings = get_settings()
+    chain = settings.role_chain(role) if role != "default" else settings.provider_chain
     providers: list[LLMClient] = []
-    for key in settings.provider_chain:
+    for key in chain:
         cls = _REGISTRY.get(key)
         if cls is None:
             log.warning("llm.unknown_provider", provider=key)
@@ -91,5 +100,5 @@ def get_llm() -> FallbackLLM:
         providers.append(cls())
     if not any(p.name == "stub" for p in providers):
         providers.append(StubProvider())
-    log.info("llm.configured", chain=[p.name for p in providers])
+    log.info("llm.configured", role=role, chain=[p.name for p in providers])
     return FallbackLLM(providers)

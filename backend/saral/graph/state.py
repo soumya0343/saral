@@ -33,6 +33,11 @@ RunStatus = Literal[
     "resolved",
     "escalated",
     "degraded",
+    # Abnormal terminal closes (CONTEXT 'Run'): set by the worker / orphan reaper, never the graph.
+    "crashed",
+    "timed_out",
+    "orphaned",
+    "abandoned",
 ]
 Route = Literal["respond", "rag", "action", "mixed", "suspend", "end"]
 
@@ -54,6 +59,9 @@ class RunState(BaseModel):
 
     route: Route | None = None
     retrieved: list[Passage] = Field(default_factory=list)
+    # Top retrieval score fell below the floor -> ungrounded info answer; escalate not invent
+    # (ADR-0002/FR-18). Set by rag_node, consumed by synthesis_node.
+    ungrounded: bool = False
     compliance_decisions: list[ComplianceDecision] = Field(default_factory=list)
     actions: list[ActionRecord] = Field(default_factory=list)
     final_response: ResponsePayload | None = None

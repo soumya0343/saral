@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
@@ -25,6 +26,7 @@ from saral.db.models import (
 )
 from saral.db.session import get_sessionmaker
 from saral.graph.state import RunState
+from saral.schemas import close_reason_for
 
 _SUSPEND_STATUSES = {"awaiting_input", "awaiting_confirmation"}
 
@@ -43,6 +45,9 @@ def _tok(*parts: str) -> str:
 async def persist_run(state: RunState) -> None:
     sm = get_sessionmaker()
     async with sm() as session:
+        # Terminal close bookkeeping (CONTEXT 'Run'): record why/when a run ended. A suspended
+        # run (awaiting_*) has no close_reason yet.
+        close_reason = close_reason_for(state.status)
         session.add(
             AgentRun(
                 id=state.run_id,
@@ -51,6 +56,8 @@ async def persist_run(state: RunState) -> None:
                 status=state.status,
                 route=state.route,
                 step_count=state.step_count,
+                close_reason=str(close_reason) if close_reason else None,
+                closed_at=datetime.now(UTC) if close_reason else None,
             )
         )
         await session.flush()  # ensure agent_runs row exists before FK-dependent inserts
@@ -75,8 +82,13 @@ async def persist_run(state: RunState) -> None:
             if state.pending_write
             else None
         )
+        # Audit records the enum reason_code (inherently PII-free) when present, falling back to
+        # the redacted reason text only for decisions without a code (CONTEXT 'Reason code').
         entries = audit.build_chain(
-            [(d.decision, d.actor, redact_pii(d.reason)) for d in state.compliance_decisions]
+            [
+                (d.decision, d.actor, str(d.reason_code) if d.reason_code else redact_pii(d.reason))
+                for d in state.compliance_decisions
+            ]
         )
         for e in entries:
             session.add(
@@ -149,3 +161,21 @@ async def persist_run(state: RunState) -> None:
             )
 
         await session.commit()
+
+
+async def resolve_escalation(
+    escalation_id: str, operator_id: str, reply: str | None = None
+) -> bool:
+    """Stamp who handled an escalation and when (ADR-0001: operator is audit-only — this records
+    audit metadata; an operator never drives a turn or fires a tool). Returns False if not found."""
+    sm = get_sessionmaker()
+    async with sm() as session:
+        esc = await session.get(Escalation, escalation_id)
+        if esc is None:
+            return False
+        esc.handled_by = operator_id
+        esc.handled_at = datetime.now(UTC)
+        if reply is not None:
+            esc.operator_reply = redact_pii(reply)
+        await session.commit()
+        return True

@@ -19,7 +19,7 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
-from saral.actions.confirm import build_pending_write, parse_confirmation
+from saral.actions.confirm import build_pending_write, is_stale, parse_confirmation
 from saral.agents.action import ActionAgent
 from saral.agents.rag import RagAgent
 from saral.agents.synthesis import SynthesisAgent, SynthesisContext
@@ -47,6 +47,14 @@ _rag = RagAgent()
 _action = ActionAgent()
 _gate = ComplianceGate()
 _synth = SynthesisAgent()
+
+# Deterministic reply when an info answer is ungrounded (retrieval below floor) — we escalate
+# rather than invent a clause we have no passage for (ADR-0002/FR-18).
+_UNGROUNDED = {
+    Language.EN: "I don't have a confident answer for that, so I'm connecting you with a human agent who can help.",  # noqa: E501
+    Language.HI: "मेरे पास इसका भरोसेमंद उत्तर नहीं है, इसलिए मैं आपको एक मानव एजेंट से जोड़ रहा हूँ।",  # noqa: E501
+    Language.HINGLISH: "Mere paas iska confident answer nahi hai, isliye main aapko ek human agent se connect kar raha hoon.",  # noqa: E501
+}
 
 _STATUS_FROM_RESOLUTION = {
     "resolved": "resolved",
@@ -104,7 +112,13 @@ async def identity_node(state: RunState) -> dict:
     Deterministic. Never raises auth_level itself; for a state-changing action it drives
     step-up (OTP) then write-confirmation, suspending the run between turns.
     """
-    up: dict = {"allowed_domains": domains_for(state.intents), "step_count": 1}
+    # Long-term memory is on-demand: the Interaction-history domain is authorized only when
+    # the customer's question references past interactions (CONTEXT 'Long-term memory').
+    wants_history = bool(state.entities.get("wants_history"))
+    up: dict = {
+        "allowed_domains": domains_for(state.intents, include_history=wants_history),
+        "step_count": 1,
+    }
 
     # Injection already blocks the run — don't mint challenges for a manipulation attempt.
     if _injection_blocked(state):
@@ -118,6 +132,13 @@ async def identity_node(state: RunState) -> dict:
     if not writes:
         return up  # reads / info: normal routing, no gate
     intent = writes[0]
+
+    # Stale pending write: past its TTL, execution authority has expired. Discard it so the
+    # write is rebuilt fresh (new nonce) and re-earns step-up + confirmation — never auto-fires
+    # off an old confirmation (ADR-0004 "authority is mortal").
+    if state.pending_write is not None and is_stale(state.pending_write):
+        log.info("identity.pending_write_stale", run_id=state.run_id, tool=state.pending_write.tool)
+        state = state.model_copy(update={"pending_write": None, "challenge_response": None})
 
     # Resume "no" → abandon the pending write (execution authority is mortal; CONTEXT).
     if state.pending_write is not None and parse_confirmation(state.resume_reply or "") == "no":
@@ -241,6 +262,13 @@ async def rag_node(state: RunState) -> dict:
             user_id=state.user_id,
             allowed_domains=state.allowed_domains,
         )
+        # Score-floor groundedness gate (ADR-0002/FR-18): if the best passage is below the
+        # floor, the answer would be ungrounded — escalate rather than invent a clause.
+        floor = get_settings().retrieval_score_floor
+        top = max((p.score for p in passages), default=0.0)
+        if floor > 0 and top < floor:
+            log.info("rag.below_floor", run_id=state.run_id, top=round(top, 4), floor=floor)
+            return {"retrieved": passages, "ungrounded": True, "step_count": 1}
         return {"retrieved": passages, "step_count": 1}
     except Exception as e:  # noqa: BLE001
         log.error("node.failed", node="rag", run_id=state.run_id, error=str(e))
@@ -266,6 +294,31 @@ async def action_node(state: RunState) -> dict:
 
 
 async def synthesis_node(state: RunState) -> dict:
+    # Ungrounded info answer (retrieval below floor): escalate instead of generating from
+    # weak/empty passages (ADR-0002/FR-18). Deterministic wording, no LLM.
+    if state.ungrounded:
+        lang = state.language or Language.EN
+        response = ResponsePayload(
+            resolution_status="escalated",
+            message=redact_pii(_UNGROUNDED.get(lang, _UNGROUNDED[Language.EN])),
+            escalated=True,
+        )
+        primary = next((i.action or str(i.type) for i in state.intents), "unknown")
+        return {
+            "final_response": response,
+            "status": "escalated",
+            "step_count": 1,
+            "escalation": EscalationRecord(
+                conversation_id=state.conversation_id,
+                tenant_id=state.tenant_id,
+                detected_intent=primary,
+                attempted_actions=[],
+                blocking_reason="retrieval_below_floor",
+                transcript_ref=state.conversation_id,
+                sla_target="4h",
+            ),
+        }
+
     ctx = SynthesisContext(
         language=state.language or Language.EN,
         message=state.raw_message,
