@@ -49,6 +49,9 @@ class Settings(BaseSettings):
     llm_provider_order: str = "sarvam,anthropic,stub"
     anthropic_model: str = "claude-sonnet-4-6"
     sarvam_model: str = "sarvam-30b"
+    # Use Sarvam /text-lid for language detection (TRD §12.2). When the key is absent or
+    # Sarvam is down, triage falls back to the deterministic regex detector (TRD §15).
+    triage_llm_language: bool = True
 
     # --- Retrieval ---
     corpus_dir: str = "data/policy_corpus"

@@ -58,14 +58,18 @@ _STATUS_FROM_RESOLUTION = {
 
 
 async def triage_node(state: RunState) -> dict:
-    result = await _triage.run(state.raw_message)
+    result, degraded = await _triage.run(state.raw_message)
     entities = {**state.known_entities, **result.entities}
-    return {
+    out: dict = {
         "language": result.language,
         "intents": result.intents,
         "entities": entities,
         "step_count": 1,
     }
+    # Sarvam language-detect failed -> deterministic fallback served; flag degraded (TRD §15).
+    if degraded:
+        out["degraded_agents"] = ["triage:sarvam"]
+    return out
 
 
 async def compliance_node(state: RunState) -> dict:

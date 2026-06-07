@@ -1,18 +1,25 @@
 """Triage / Intent agent.
 
 Detects language (En/Hi/Hinglish), classifies intent(s), and extracts entities into an
-`IntentResult`. Uses the LLM layer's structured output. The deterministic classifier below
-doubles as the StubProvider handler, so triage works with no API key and stays reproducible
-for eval.
+`IntentResult`. Language detection uses Sarvam's /text-lid endpoint (the Indian-language
+differentiator, TRD §12.2); intent classification and entity extraction stay deterministic
+(they drive compliance + tool selection, so correctness over flexibility — TRD §11.3). The
+deterministic classifier below doubles as the StubProvider handler, so triage works with no
+API key and stays reproducible for eval.
 """
 
 from __future__ import annotations
 
 import re
 
-from saral.llm.base import Message
+from saral.config import get_settings
+from saral.llm.base import LLMError, Message
+from saral.llm.sarvam import SarvamProvider
 from saral.llm.stub import register_structured_handler
+from saral.logging import get_logger
 from saral.schemas import Intent, IntentResult, IntentType, Language
+
+log = get_logger(__name__)
 
 # --- Keyword lexicons (English + romanized Hindi + Devanagari) ---
 
@@ -181,15 +188,35 @@ _SYSTEM_PROMPT = (
 
 
 class TriageAgent:
-    """Intent classification is deterministic (TRD §11.3: correctness over flexibility).
+    """Sarvam-backed language detection + deterministic intent/entity classification.
 
-    Routing and entity extraction drive compliance and tool selection, so we use the
-    keyword/regex classifier rather than an LLM — it is fast, reproducible, and exactly what
-    the eval suite validates. The LLM path remains available via the stub-registered handler
-    for experimentation.
+    Intent classification and entity extraction are deterministic (TRD §11.3: correctness
+    over flexibility) — they drive compliance and tool selection and are what the eval suite
+    validates. Language detection routes through Sarvam's /text-lid endpoint (TRD §12.2): it
+    disambiguates Hinglish (romanized Hindi) from English far better than the regex marker
+    list. On Sarvam unavailability the deterministic detector takes over and the run is flagged
+    degraded (TRD §15).
     """
 
     name = "triage"
 
-    async def run(self, message: str) -> IntentResult:
-        return classify(message)
+    def __init__(self) -> None:
+        self._sarvam = SarvamProvider()
+
+    async def _detect_language(self, message: str) -> tuple[Language, bool]:
+        """Returns (language, degraded). degraded=True only when Sarvam was expected but failed."""
+        settings = get_settings()
+        if not (settings.triage_llm_language and self._sarvam.available):
+            # No Sarvam configured: deterministic detection is the expected path, not degraded.
+            return detect_language(message), False
+        try:
+            return await self._sarvam.detect_language(message), False
+        except LLMError as e:
+            log.warning("triage.sarvam_lid_failed", error=str(e))
+            return detect_language(message), True
+
+    async def run(self, message: str) -> tuple[IntentResult, bool]:
+        result = classify(message)  # deterministic intent + entity + baseline language
+        language, degraded = await self._detect_language(message)
+        result.language = language
+        return result, degraded

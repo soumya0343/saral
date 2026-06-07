@@ -7,6 +7,7 @@ output is requested via JSON mode + schema-in-prompt, then parsed and validated.
 from __future__ import annotations
 
 import json
+import re
 from typing import TypeVar
 
 import httpx
@@ -14,6 +15,7 @@ from pydantic import BaseModel, ValidationError
 
 from saral.config import get_settings
 from saral.llm.base import LLMError, Message
+from saral.schemas import Language
 
 T = TypeVar("T", bound=BaseModel)
 
@@ -33,6 +35,35 @@ class SarvamProvider:
             "Authorization": f"Bearer {self._settings.sarvam_api_key}",
             "Content-Type": "application/json",
         }
+
+    def _lid_headers(self) -> dict[str, str]:
+        # Sarvam's classic text APIs (LID/translate) authenticate via api-subscription-key,
+        # not the OpenAI-compat Bearer scheme. The same key works for both.
+        return {
+            "api-subscription-key": self._settings.sarvam_api_key or "",
+            "Content-Type": "application/json",
+        }
+
+    async def detect_language(self, text: str) -> Language:
+        """Language identification via Sarvam's purpose-built /text-lid endpoint.
+
+        Returns one of our three supported labels (en/hi/hinglish). Hinglish is hi written
+        in Latin script (script_code), which the deterministic regex can only guess at —
+        this is the core Sarvam differentiator (TRD §12.2). Raises LLMError on any transport
+        failure so the caller falls back to the deterministic detector and flags degraded
+        mode (TRD §15).
+        """
+        if not self.available:
+            raise LLMError("sarvam: no API key")
+        url = f"{self._settings.sarvam_base_url.rstrip('/')}/text-lid"
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                resp = await client.post(url, headers=self._lid_headers(), json={"input": text})
+                resp.raise_for_status()
+                data = resp.json()
+        except Exception as e:  # noqa: BLE001
+            raise LLMError(f"sarvam text-lid failed: {e}") from e
+        return _map_lid(data, text)
 
     async def _chat(self, payload: dict) -> str:
         url = f"{self._settings.sarvam_base_url.rstrip('/')}/v1/chat/completions"
@@ -94,6 +125,30 @@ class SarvamProvider:
             return schema.model_validate_json(_strip_fences(raw))
         except ValidationError as e:
             raise LLMError(f"sarvam structured parse failed: {e}") from e
+
+
+_DEVANAGARI = re.compile(r"[ऀ-ॿ]")
+
+
+def _map_lid(data: dict, text: str) -> Language:
+    """Map a Sarvam text-lid response to our three-label enum.
+
+    text-lid returns e.g. {"language_code": "hi-IN", "script_code": "Latin"}. Hinglish is the
+    (hi, Latin) combination — Hindi words typed in Roman script. Languages outside our enum
+    (ta/te/bn/…) fall back to a script heuristic since the corpus only supports en/hi/hinglish.
+    """
+    code = str(data.get("language_code") or "").lower()
+    script = str(data.get("script_code") or "").lower()
+    # text-lid returns ISO 15924 codes: "Latn" (Latin/romanized), "Deva" (Devanagari).
+    is_latin = script.startswith(("latn", "latin", "roman"))
+    if code.startswith("en"):
+        return Language.EN
+    if code.startswith("hi"):
+        return Language.HINGLISH if is_latin else Language.HI
+    # Out-of-scope language: best-effort by script (no exception — Sarvam did answer).
+    if _DEVANAGARI.search(text):
+        return Language.HI
+    return Language.EN
 
 
 def _strip_fences(text: str) -> str:
