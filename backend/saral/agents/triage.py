@@ -68,6 +68,16 @@ _INFORMATION = {
 }
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
+# Capability / permission questions ("can I…?", "kya main … sakti/sakta hu", "how do I…").
+# These ASK ABOUT an action, they don't request it — route to INFORMATION, never a write.
+_CAPABILITY = {
+    "can i", "could i", "do i", "am i able", "is it possible", "how do i", "how can i",
+    "how to", "what is the process", "allowed to", "eligible to",
+    "kya main", "kya mai", "kya hum", "kar sakta", "kar sakti", "kar sakte",
+    "kar sakta hu", "kar sakti hu", "kar sakte hain", "kaise kar", "kaise karu",
+    "kaise karun", "kaise file", "possible hai", "kar paunga", "kar paungi",
+    "क्या मैं", "कैसे कर", "सकता हूँ", "सकती हूँ", "कैसे करूँ", "कर सकते",
+}
 # History-seeking phrasing: authorizes the Interaction-history domain on demand (long-term
 # memory). Never eager — only when the customer references their past interactions.
 _HISTORY = {
@@ -128,11 +138,18 @@ def classify_intents(text: str) -> list[Intent]:
     lower = text.lower()
     intents: list[Intent] = []
 
-    if _UPDATE_RE.search(text) or _hits(lower, {k.lower() for k in _UPDATE_CONTACT}):
+    # A capability/permission question ("can I file a claim?", "kya main claim file kar sakti
+    # hu?") ASKS ABOUT a write — it is information, not a request to perform it. Suppress the
+    # write action so it never triggers step-up; answer the "how/whether" from retrieval.
+    capability = _hits(lower, {k.lower() for k in _CAPABILITY})
+
+    if not capability and (
+        _UPDATE_RE.search(text) or _hits(lower, {k.lower() for k in _UPDATE_CONTACT})
+    ):
         intents.append(Intent(type=IntentType.ACTION, action="update_contact", confidence=0.9))
-    if _hits(lower, {k.lower() for k in _RAISE_TICKET}):
+    if not capability and _hits(lower, {k.lower() for k in _RAISE_TICKET}):
         intents.append(Intent(type=IntentType.ACTION, action="raise_ticket", confidence=0.85))
-    if _hits(lower, {k.lower() for k in _FILE_CLAIM}):
+    if not capability and _hits(lower, {k.lower() for k in _FILE_CLAIM}):
         intents.append(Intent(type=IntentType.ACTION, action="file_claim", confidence=0.9))
     has_claim_id = bool(_CLAIM_RE.search(text))
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
@@ -156,8 +173,12 @@ def classify_intents(text: str) -> list[Intent]:
         intents.append(
             Intent(type=IntentType.ACTION, action="get_policy_details", confidence=0.85)
 )
-    if not policy_lookup and _hits(lower, {k.lower() for k in _INFORMATION}):
-        intents.append(Intent(type=IntentType.INFORMATION, confidence=0.8))
+    has_information = _hits(lower, {k.lower() for k in _INFORMATION})
+    # A capability question is informational even if its topic word isn't in the FAQ lexicon
+    # (e.g. "claim" alone) — so route the suppressed write to INFORMATION.
+    has_info_intent = any(i.type == IntentType.INFORMATION for i in intents)
+    if not policy_lookup and (has_information or capability) and not has_info_intent:
+        intents.append(Intent(type=IntentType.INFORMATION, confidence=0.7))
     if not intents and _hits(lower, {k.lower() for k in _GREETING}):
         intents.append(Intent(type=IntentType.SMALL_TALK, confidence=0.7))
     if _hits(lower, {k.lower() for k in _COMPLAINT}):

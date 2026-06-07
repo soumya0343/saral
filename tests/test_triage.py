@@ -108,3 +108,23 @@ async def test_no_sarvam_key_is_not_degraded(monkeypatch):
     )
     assert degraded is False
     assert result.language == Language.EN
+
+
+def test_capability_question_is_information_not_write():
+    # "Can I file another claim?" ASKS ABOUT the action — must not trigger a write/step-up.
+    for msg in (
+        "kya main ek aur claim file kar sakti hu?",
+        "can I file another claim?",
+        "how do I update my number?",
+    ):
+        r = classify(msg)
+        assert any(i.type == IntentType.INFORMATION for i in r.intents), msg
+        assert not any(i.type == IntentType.ACTION for i in r.intents), msg
+
+
+def test_real_write_still_action():
+    assert any(i.action == "file_claim" for i in classify("file a claim").intents)
+    assert any(
+        i.action == "update_contact"
+        for i in classify("update my mobile number to 9000000000").intents
+    )

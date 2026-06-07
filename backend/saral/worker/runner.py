@@ -123,7 +123,10 @@ async def execute_run(req: RunRequest) -> RunState:
                     ev(
                         "agent_finished",
                         agent=node_name,
-                        data={"elapsed_ms": elapsed_ms, "tokens": int(update.get("tokens_used") or 0)},
+                        data={
+                            "elapsed_ms": elapsed_ms,
+                            "tokens": int(update.get("tokens_used") or 0),
+                        },
                     )
                 )
 

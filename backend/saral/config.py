@@ -51,7 +51,7 @@ class Settings(BaseSettings):
     groq_model: str = "llama-3.3-70b-versatile"
     cerebras_api_key: str | None = None
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    cerebras_model: str = "llama-3.3-70b"
+    cerebras_model: str = "gpt-oss-120b"  # availability is key-specific; GET /v1/models to verify
     gemini_api_key: str | None = None
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     gemini_model: str = "gemini-2.0-flash"

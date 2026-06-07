@@ -214,9 +214,13 @@ class SynthesisAgent:
                 facts = self._facts(ctx, payload)
                 phrased = await self._phrase(ctx, facts)
                 self.last_tokens = self._llm.last_tokens
-                # Grounding gate: only accept LLM phrasing whose facts trace to the sources;
-                # otherwise keep the deterministic grounded draft.
-                if phrased and _grounded(phrased, "\n".join(facts) + " " + payload.message):
+                # Grounding gate: accept LLM phrasing only when it traces to the sources AND is
+                # not the stub echo (all real providers failed -> keep the deterministic draft).
+                if (
+                    phrased
+                    and not phrased.startswith("[stub]")
+                    and _grounded(phrased, "\n".join(facts) + " " + payload.message)
+                ):
                     payload.message = phrased
         return payload
 

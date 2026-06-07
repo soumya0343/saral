@@ -13,7 +13,7 @@ import time
 from typing import Literal
 
 from saral.config import get_settings
-from saral.schemas import Intent, PendingWrite
+from saral.schemas import Intent, Language, PendingWrite
 
 # Multilingual yes/no for confirmation.
 _YES = {"yes", "y", "confirm", "ok", "okay", "haan", "haa", "ha", "हाँ", "हां", "जी", "sure"}
@@ -43,18 +43,42 @@ def idempotency_key(conversation_id: str, tool: str, args: dict, intent_nonce: i
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
 
 
-def _read_back(tool: str, field: str | None, value: str | None) -> str:
-    if tool == "update_contact":
-        return f"Update registered {field} to {value} — confirm? (yes/no)"
-    if tool == "raise_ticket":
-        return f"Raise a support ticket: “{value}” — confirm? (yes/no)"
-    if tool == "file_claim":
-        return f"File a new claim: “{value}” — confirm? (yes/no)"
-    return f"Execute {tool} — confirm? (yes/no)"
+# Language-matched confirmation read-backs ({0}=field/value), with a yes/no suffix.
+_READ_BACK = {
+    "update_contact": {
+        Language.EN: "Update registered {field} to {value} — confirm?",
+        Language.HI: "पंजीकृत {field} को {value} में अपडेट करें — पुष्टि करें?",
+        Language.HINGLISH: "Registered {field} ko {value} me update karein — confirm?",
+    },
+    "raise_ticket": {
+        Language.EN: "Raise a support ticket: “{value}” — confirm?",
+        Language.HI: "सहायता टिकट दर्ज करें: “{value}” — पुष्टि करें?",
+        Language.HINGLISH: "Support ticket raise karein: “{value}” — confirm?",
+    },
+    "file_claim": {
+        Language.EN: "File a new claim: “{value}” — confirm?",
+        Language.HI: "नया क्लेम दर्ज करें: “{value}” — पुष्टि करें?",
+        Language.HINGLISH: "Naya claim file karein: “{value}” — confirm?",
+    },
+}
+_YESNO = {Language.EN: " (yes/no)", Language.HI: " (हाँ/नहीं)", Language.HINGLISH: " (haan/nahi)"}
+
+
+def _read_back(tool: str, field: str | None, value: str | None, lang: Language) -> str:
+    table = _READ_BACK.get(tool)
+    if not table:
+        return f"Execute {tool} — confirm?{_YESNO.get(lang, _YESNO[Language.EN])}"
+    body = table.get(lang, table[Language.EN]).format(field=field, value=value)
+    return body + _YESNO.get(lang, _YESNO[Language.EN])
 
 
 def build_pending_write(
-    conversation_id: str, intent: Intent, entities: dict, message: str, intent_nonce: int
+    conversation_id: str,
+    intent: Intent,
+    entities: dict,
+    message: str,
+    intent_nonce: int,
+    language: Language = Language.EN,
 ) -> PendingWrite | None:
     """Parse a write intent into a confirmable PendingWrite, or None if args are missing."""
     tool = intent.action or ""
@@ -84,7 +108,7 @@ def build_pending_write(
         field=field,
         value=value,
         args=args,
-        read_back=_read_back(tool, field, value),
+        read_back=_read_back(tool, field, value, language),
         idempotency_key=idempotency_key(conversation_id, tool, args, intent_nonce),
         intent_nonce=intent_nonce,
         created_at=time.time(),

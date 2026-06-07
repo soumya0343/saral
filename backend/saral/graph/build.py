@@ -56,6 +56,56 @@ _UNGROUNDED = {
     Language.HINGLISH: "Mere paas iska confident answer nahi hai, isliye main aapko ek human agent se connect kar raha hoon.",  # noqa: E501
 }
 
+# Language-matched identity-gate prompts (reply in the customer's language, not always English).
+_CANCELLED = {
+    Language.EN: "Okay, I've cancelled that change. Anything else?",
+    Language.HI: "ठीक है, मैंने वह बदलाव रद्द कर दिया है। और कुछ?",
+    Language.HINGLISH: "Theek hai, maine wo change cancel kar diya hai. Aur kuch?",
+}
+_CLARIFY_CONTACT = {
+    Language.EN: "What should I update — mobile or email — and to what value?",
+    Language.HI: "मैं क्या अपडेट करूँ — मोबाइल या ईमेल — और किस मान में?",
+    Language.HINGLISH: "Main kya update karu — mobile ya email — aur kis value me?",
+}
+_STEPUP_FAILED = {
+    Language.EN: "I couldn't verify the one-time code, so I've escalated this to a human agent who will follow up.",  # noqa: E501
+    Language.HI: "मैं वन-टाइम कोड सत्यापित नहीं कर सका, इसलिए इसे एक मानव एजेंट को भेज दिया है जो आगे संपर्क करेगा।",  # noqa: E501
+    Language.HINGLISH: "Main one-time code verify nahi kar paaya, isliye maine ise human agent ko escalate kar diya hai jo follow up karega.",  # noqa: E501
+}
+_STEPUP_PROMPT = {
+    Language.EN: "To {action}, I need to verify it's you. I've sent a one-time code.",
+    Language.HI: "{action} के लिए, मुझे सत्यापित करना होगा कि यह आप ही हैं। मैंने एक वन-टाइम कोड भेजा है।",  # noqa: E501
+    Language.HINGLISH: "{action} ke liye, mujhe verify karna hoga ki yeh aap hi hain. Maine ek one-time code bheja hai.",  # noqa: E501
+}
+_OTP_SUFFIX = {
+    Language.EN: " Please reply with the code.",
+    Language.HI: " कृपया कोड के साथ उत्तर दें।",
+    Language.HINGLISH: " Kripya code ke saath reply karein.",
+}
+# Localized action names used inside the step-up prompt.
+_ACTION_NAME = {
+    "update_contact": {
+        Language.EN: "update your contact details",
+        Language.HI: "आपका संपर्क विवरण अपडेट करने",
+        Language.HINGLISH: "aapka contact update karne",
+    },
+    "raise_ticket": {
+        Language.EN: "raise a ticket",
+        Language.HI: "टिकट दर्ज करने",
+        Language.HINGLISH: "ticket raise karne",
+    },
+    "file_claim": {
+        Language.EN: "file a claim",
+        Language.HI: "क्लेम दर्ज करने",
+        Language.HINGLISH: "claim file karne",
+    },
+}
+
+
+def _t(table: dict, lang: Language | None) -> str:
+    return table.get(lang or Language.EN) or table.get(Language.EN) or ""
+
+
 _STATUS_FROM_RESOLUTION = {
     "resolved": "resolved",
     "escalated": "escalated",
@@ -132,6 +182,7 @@ async def identity_node(state: RunState) -> dict:
     if not writes:
         return up  # reads / info: normal routing, no gate
     intent = writes[0]
+    lang = state.language or Language.EN
 
     # Stale pending write: past its TTL, execution authority has expired. Discard it so the
     # write is rebuilt fresh (new nonce) and re-earns step-up + confirmation — never auto-fires
@@ -148,9 +199,9 @@ async def identity_node(state: RunState) -> dict:
             "pending_write": None,
             "final_response": ResponsePayload(
                 resolution_status="resolved",
-                message="Okay, I've cancelled that change. Anything else?",
+                message=_t(_CANCELLED, lang),
                 escalated=False,
-),
+            ),
             "step_count": 1,
         }
 
@@ -160,12 +211,11 @@ async def identity_node(state: RunState) -> dict:
     if pending is None:
         nonce = state.intent_nonce + 1
         pending = build_pending_write(
-            state.conversation_id, intent, state.entities, state.raw_message, nonce
-)
+            state.conversation_id, intent, state.entities, state.raw_message, nonce, lang
+        )
         if pending is None:
             # Missing argument → clarification (soft signal), not step-up.
-            q = "What should I update — mobile or email — and to what value?"
-            return _suspend("awaiting_input", q)
+            return _suspend("awaiting_input", _t(_CLARIFY_CONTACT, lang))
 
     decision = identity_gate(state.auth_level, state.intents)
 
@@ -190,22 +240,17 @@ async def identity_node(state: RunState) -> dict:
                 "escalation": esc,
                 "final_response": ResponsePayload(
                     resolution_status="escalated",
-                    message=(
-                        "I couldn't verify the one-time code, so I've escalated this to a "
-                        "human agent who will follow up."
-),
+                    message=_t(_STEPUP_FAILED, lang),
                     escalated=True,
-),
+                ),
                 "step_count": 1,
             }
         chal = request_step_up(state.user_id)
-        prompt = (
-            f"To {pending.tool.replace('_', ' ')}, I need to verify it's you. "
-            "I've sent a one-time code."
-)
+        action_name = _t(_ACTION_NAME.get(pending.tool, {}), lang) or pending.tool.replace("_", " ")
+        prompt = _t(_STEPUP_PROMPT, lang).format(action=action_name)
         if chal.get("test_otp"):
             prompt += f" (test code: {chal['test_otp']})"
-        prompt += " Please reply with the code."
+        prompt += _t(_OTP_SUFFIX, lang)
         return _suspend(
             "awaiting_input",
             prompt,
