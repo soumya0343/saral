@@ -1,9 +1,9 @@
 """Run persistence: agent_runs, action_records, the hash-chained audit_log, conversation
 suspend/resume state, and escalations.
 
-Action args and results are PII-redacted before storage (FR-6, NFR-4). The audit chain is
+Action args and results are PII-redacted before storage. The audit chain is
 built with `compliance.audit`; it stores only reason codes + tokenized refs (`user_ref`,
-`args_hash`) — no raw PII (NFR-4). A tamper attempt is detectable via `verify_chain`.
+`args_hash`) — no raw PII. A tamper attempt is detectable via `verify_chain`.
 """
 
 from __future__ import annotations
@@ -45,7 +45,7 @@ def _tok(*parts: str) -> str:
 async def persist_run(state: RunState) -> None:
     sm = get_sessionmaker()
     async with sm() as session:
-        # Terminal close bookkeeping (CONTEXT 'Run'): record why/when a run ended. A suspended
+        # Terminal close bookkeeping: record why/when a run ended. A suspended
         # run (awaiting_*) has no close_reason yet.
         close_reason = close_reason_for(state.status)
         session.add(
@@ -83,7 +83,7 @@ async def persist_run(state: RunState) -> None:
             else None
         )
         # Audit records the enum reason_code (inherently PII-free) when present, falling back to
-        # the redacted reason text only for decisions without a code (CONTEXT 'Reason code').
+        # the redacted reason text only for decisions without a code.
         entries = audit.build_chain(
             [
                 (d.decision, d.actor, str(d.reason_code) if d.reason_code else redact_pii(d.reason))
@@ -126,7 +126,7 @@ async def persist_run(state: RunState) -> None:
                 )
             )
 
-        # Suspend/resume custody on the conversation (TRD §13.2/§13.4).
+        # Suspend/resume custody on the conversation.
         convo = await session.get(Conversation, state.conversation_id)
         if convo is not None:
             if state.status in _SUSPEND_STATUSES:
@@ -144,7 +144,7 @@ async def persist_run(state: RunState) -> None:
                 convo.original_message = None
             convo.status = state.status
 
-        # Escalation as a durable artifact (TRD §12.7).
+        # Escalation as a durable artifact.
         if state.escalation is not None:
             esc = state.escalation
             session.add(
@@ -166,7 +166,7 @@ async def persist_run(state: RunState) -> None:
 async def resolve_escalation(
     escalation_id: str, operator_id: str, reply: str | None = None
 ) -> bool:
-    """Stamp who handled an escalation and when (ADR-0001: operator is audit-only — this records
+    """Stamp who handled an escalation and when (: operator is audit-only — this records
     audit metadata; an operator never drives a turn or fires a tool). Returns False if not found."""
     sm = get_sessionmaker()
     async with sm() as session:

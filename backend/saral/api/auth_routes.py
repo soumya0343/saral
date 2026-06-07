@@ -1,4 +1,4 @@
-"""Mock IdP + step-up endpoints (TRD §17, §11.5).
+"""Mock IdP + step-up endpoints.
 
 `/auth/session` mints a short-TTL session token (the host app's job; simulated here). The
 token is the ONLY source of identity downstream. `/auth/step-up` runs the OTP challenge: a

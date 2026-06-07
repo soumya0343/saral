@@ -1,6 +1,6 @@
-"""Typed shared state flowing through the agent graph (TRD §13.1).
+"""Typed shared state flowing through the agent graph.
 
-Two orthogonal axes (TRD §13.4): `auth_level` (token-derived) × `status` (lifecycle, with
+Two orthogonal axes: `auth_level` (token-derived) × `status` (lifecycle, with
 suspend states `awaiting_input` / `awaiting_confirmation`). No state-changing tool fires
 without a fresh token re-validation in the same transition — suspension never carries
 execution authority forward.
@@ -28,12 +28,12 @@ from saral.schemas import (
 
 RunStatus = Literal[
     "in_progress",
-    "awaiting_input",  # clarification — soft signal, expects a customer reply (CONTEXT)
+    "awaiting_input", # clarification — soft signal, expects a customer reply
     "awaiting_confirmation",  # write read-back — expects yes/no
     "resolved",
     "escalated",
     "degraded",
-    # Abnormal terminal closes (CONTEXT 'Run'): set by the worker / orphan reaper, never the graph.
+    # Abnormal terminal closes: set by the worker / orphan reaper, never the graph.
     "crashed",
     "timed_out",
     "orphaned",
@@ -46,7 +46,7 @@ class RunState(BaseModel):
     run_id: str = ""
     conversation_id: str
     tenant_id: str = "t_demo"
-    user_id: str  # token-derived only (TRD §11.5)
+    user_id: str # token-derived only
     auth_level: AuthLevel = AuthLevel.SESSION
     raw_message: str
     history: list[HistoryTurn] = Field(default_factory=list)
@@ -60,14 +60,14 @@ class RunState(BaseModel):
     route: Route | None = None
     retrieved: list[Passage] = Field(default_factory=list)
     # Top retrieval score fell below the floor -> ungrounded info answer; escalate not invent
-    # (ADR-0002/FR-18). Set by rag_node, consumed by synthesis_node.
+    #. Set by rag_node, consumed by synthesis_node.
     ungrounded: bool = False
     compliance_decisions: list[ComplianceDecision] = Field(default_factory=list)
     actions: list[ActionRecord] = Field(default_factory=list)
     final_response: ResponsePayload | None = None
     escalation: EscalationRecord | None = None
 
-    # --- write-confirmation + step-up (TRD §12.5.1, §13.4) ---
+    # --- write-confirmation + step-up ---
     pending_write: PendingWrite | None = None
     intent_nonce: int = 0  # server-incremented; never from the message body
     step_up_owed: bool = False
@@ -76,7 +76,7 @@ class RunState(BaseModel):
     resume_reply: str | None = None
     challenge_response: str | None = None
 
-    # Specialists that failed; the run continues in degraded mode (TRD §15).
+    # Specialists that failed; the run continues in degraded mode.
     degraded_agents: Annotated[list[str], operator.add] = Field(default_factory=list)
 
     status: RunStatus = "in_progress"

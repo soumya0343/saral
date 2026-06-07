@@ -1,4 +1,4 @@
-"""Result schemas for the mock backend tools (TRD §14)."""
+"""Result schemas for the mock backend tools."""
 
 from __future__ import annotations
 

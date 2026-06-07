@@ -35,13 +35,13 @@ async def run() -> None:
 
     last_reap = 0.0
     while True:
-        # 0) Periodically abandon orphaned suspended conversations (ADR-0004 pending-write TTL).
+        # 0) Periodically abandon orphaned suspended conversations (pending-write TTL).
         if time.time() - last_reap > _REAP_INTERVAL_S:
             await _reap()
             last_reap = time.time()
 
         # 1) Reclaim messages pending on dead/stuck consumers (XAUTOCLAIM). The checkpointer
-        #    lets execute_run resume these mid-run rather than restart (TRD §15).
+        # lets execute_run resume these mid-run rather than restart.
         await _reclaim(r, settings, consumer)
 
         # 2) Consume new messages.

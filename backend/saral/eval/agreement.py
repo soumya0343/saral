@@ -1,4 +1,4 @@
-"""Judge-vs-human agreement: Cohen's kappa (CONTEXT 'Judge': floor kappa >= 0.6).
+"""Judge-vs-human agreement: Cohen's kappa (: floor kappa >= 0.6).
 
 The judge is only trusted in a language where it agrees with human labels beyond chance.
 Kappa corrects raw agreement for chance — critical when labels are skewed (an all-pass suite

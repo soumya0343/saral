@@ -73,7 +73,7 @@ class MIdem(MockBase):
     __tablename__ = "mock_idempotency"
     key: Mapped[str] = mapped_column(String(128), primary_key=True)
     payload: Mapped[str] = mapped_column(Text)
-    # Dedup window is tied to the pending-write TTL (ADR-0004): entries past TTL are purged
+    # Dedup window is tied to the pending-write TTL: entries past TTL are purged
     # together (a genuinely new intent gets a fresh nonce -> fresh key, so this never re-fires).
     created_epoch: Mapped[int] = mapped_column(Integer, default=0)
 
@@ -85,7 +85,7 @@ class MMeta(MockBase):
 
 
 class MChallenge(MockBase):
-    """Step-up OTP challenge (TRD §11.5). Synthetic: code returned in non-prod, no SMS."""
+    """Step-up OTP challenge. Synthetic: code returned in non-prod, no SMS."""
 
     __tablename__ = "mock_challenges"
     challenge_id: Mapped[str] = mapped_column(String(48), primary_key=True)
@@ -115,7 +115,7 @@ _SEED_CLAIMS = [
         45000,
         "2026-05-28",
         "Awaiting hospital discharge summary.",
-    ),
+),
     (
         "CLM2002",
         "POL1002",
@@ -123,7 +123,7 @@ _SEED_CLAIMS = [
         18000,
         "2026-05-30",
         "Approved; disbursal in 3-5 working days.",
-    ),
+),
 ]
 _ALLOWED_CONTACT_FIELDS = {"mobile", "email"}
 
@@ -148,7 +148,7 @@ class Store:
             try:
                 conn.execute(
                     text("ALTER TABLE mock_idempotency ADD COLUMN IF NOT EXISTS created_epoch INTEGER DEFAULT 0")  # noqa: E501
-                )
+)
             except Exception as e:  # noqa: BLE001 — sqlite lacks IF NOT EXISTS; fresh tables already have it
                 log.debug("store.ensure_columns_skipped", error=str(e))
 
@@ -170,8 +170,8 @@ class Store:
                             premium_inr=prem,
                             sum_assured_inr=sa,
                             renewal_date=rd,
-                        )
-                    )
+)
+)
             for cid, pid, st, amt, lu, note in _SEED_CLAIMS:
                 if s.get(MClaim, cid) is None:
                     s.add(
@@ -182,8 +182,8 @@ class Store:
                             amount_inr=amt,
                             last_updated=lu,
                             note=note,
-                        )
-                    )
+)
+)
             self._seed_from_manifest(s)
             s.commit()
 
@@ -209,8 +209,8 @@ class Store:
                         name=cust.get("name", cid),
                         mobile=cust.get("registered_mobile"),
                         email=cust.get("registered_email"),
-                    )
-                )
+)
+)
             for p in cust.get("policies", []):
                 if s.get(MPolicy, p["policy_id"]) is None:
                     s.add(
@@ -222,8 +222,8 @@ class Store:
                             premium_inr=p.get("premium_inr", 0),
                             sum_assured_inr=p.get("sum_assured_inr", 0),
                             renewal_date=p.get("renewal_date", ""),
-                        )
-                    )
+)
+)
             for c in cust.get("claims", []):
                 if s.get(MClaim, c["claim_id"]) is None:
                     s.add(
@@ -234,8 +234,8 @@ class Store:
                             amount_inr=c.get("amount_inr"),
                             last_updated=c.get("last_updated", ""),
                             note=c.get("note"),
-                        )
-                    )
+)
+)
 
     def reset(self) -> None:
         """Test helper: wipe + reseed."""
@@ -245,7 +245,7 @@ class Store:
             s.commit()
         self.seed()
 
-    # --- step-up challenges (TRD §11.5) ---
+    # --- step-up challenges ---
     def create_challenge(self, user_id: str, code: str, ttl_s: int) -> str:
         import time
 
@@ -257,8 +257,8 @@ class Store:
                     user_id=user_id,
                     code=code,
                     expires_epoch=int(time.time()) + ttl_s,
-                )
-            )
+)
+)
             s.commit()
         return challenge_id
 
@@ -294,7 +294,7 @@ class Store:
             premium_inr=p.premium_inr,
             sum_assured_inr=p.sum_assured_inr,
             renewal_date=p.renewal_date,
-        )
+)
 
     @staticmethod
     def _claim(c: MClaim) -> ClaimStatus:
@@ -305,7 +305,7 @@ class Store:
             amount_inr=c.amount_inr,
             last_updated=c.last_updated,
             note=c.note,
-        )
+)
 
     # --- read-only ---
     def get_claim_status(self, claim_id: str) -> ClaimStatus:
@@ -325,7 +325,7 @@ class Store:
     # --- state-changing (idempotent) ---
     def update_contact(
         self, user_id: str, field: str, value: str, idempotency_key: str
-    ) -> ActionResult:
+) -> ActionResult:
         with Session(self.engine) as s:
             if (prior := s.get(MIdem, idempotency_key)) is not None:
                 return ActionResult.model_validate_json(prior.payload)
@@ -335,7 +335,7 @@ class Store:
             if field not in _ALLOWED_CONTACT_FIELDS:
                 raise ToolError(
                     f"field '{field}' not updatable; allowed: {_ALLOWED_CONTACT_FIELDS}"
-                )
+)
             old = getattr(u, field)
             setattr(u, field, value)
             result = ActionResult(
@@ -343,14 +343,14 @@ class Store:
                 idempotency_key=idempotency_key,
                 detail=f"{field} updated",
                 changed={"field": field, "old": old, "new": value},
-            )
+)
             s.add(
                 MIdem(
                     key=idempotency_key,
                     payload=result.model_dump_json(),
                     created_epoch=int(time.time()),
-                )
-            )
+)
+)
             s.commit()
             return result
 
@@ -365,15 +365,15 @@ class Store:
                 user_id=user_id,
                 subject=subject,
                 idempotency_key=idempotency_key,
-            )
+)
             s.add(MTicket(ticket_id=ticket.ticket_id, user_id=user_id, subject=subject))
             s.add(
                 MIdem(
                     key=idempotency_key,
                     payload=ticket.model_dump_json(),
                     created_epoch=int(time.time()),
-                )
-            )
+)
+)
             s.commit()
             return ticket
 
@@ -392,7 +392,7 @@ class Store:
                 amount_inr=None,
                 last_updated="2026-06-05",
                 note=f"Filed: {subject[:80]}. Awaiting assessment.",
-            )
+)
             s.add(c)
             claim = self._claim(c)
             s.add(
@@ -400,8 +400,8 @@ class Store:
                     key=idempotency_key,
                     payload=claim.model_dump_json(),
                     created_epoch=int(time.time()),
-                )
-            )
+)
+)
             s.commit()
             return claim
 
@@ -431,8 +431,8 @@ class Store:
                     premium_inr=12000,
                     sum_assured_inr=400000,
                     renewal_date="2027-01-01",
-                )
-            )
+)
+)
             s.commit()
             return {
                 "user_id": user_id,
@@ -451,14 +451,14 @@ class Store:
             return s.get(MUser, user_id) is not None
 
     def purge_idempotency(self, older_than_s: int, now: float | None = None) -> int:
-        """Purge dedup entries past the TTL (dedup window tied to pending-write TTL, ADR-0004)."""
+        """Purge dedup entries past the TTL (dedup window tied to pending-write TTL)."""
         cutoff = int((now or time.time()) - older_than_s)
         with Session(self.engine) as s:
             n = (
                 s.query(MIdem)
                 .filter(MIdem.created_epoch > 0, MIdem.created_epoch < cutoff)
                 .delete()
-            )
+)
             s.commit()
             return n
 

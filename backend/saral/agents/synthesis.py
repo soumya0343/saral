@@ -1,7 +1,7 @@
 """Synthesis / Response agent.
 
 Composes the final answer in the user's language as a JSON-schema-constrained
-ResponsePayload (TRD §12.6). Every factual claim is bound to a citation surfaced by the
+ResponsePayload. Every factual claim is bound to a citation surfaced by the
 RAG agent — the agent never asserts what retrieval did not return.
 
 The deterministic stub composer doubles as the no-key path and keeps eval reproducible.
@@ -141,7 +141,7 @@ def compose(ctx: SynthesisContext) -> ResponsePayload:
     )
 
 
-# --- Grounding check (CONTEXT "Grounding check") ---
+# --- Grounding check ---
 # Every number/amount/id in the LLM-phrased reply must trace to a retrieved passage or action
 # result; otherwise we discard the phrasing and keep the deterministic grounded draft. The
 # factual core is always deterministic — the LLM only rephrases tone, never facts.
@@ -196,7 +196,7 @@ class SynthesisAgent:
     name = "synthesis"
 
     def __init__(self) -> None:
-        self._llm = get_llm("synthesis")  # Hindi-strong Gemini Flash first (ADR-0003)
+        self._llm = get_llm("synthesis") # Hindi-strong Gemini Flash first
 
     async def run(self, ctx: SynthesisContext) -> ResponsePayload:
         # Deterministic structure (status / citations / actions) — never delegated.
@@ -212,7 +212,7 @@ class SynthesisAgent:
                 facts = self._facts(ctx, payload)
                 phrased = await self._phrase(ctx, facts)
                 # Grounding gate: only accept LLM phrasing whose facts trace to the sources;
-                # otherwise keep the deterministic grounded draft (CONTEXT "Grounding check").
+                # otherwise keep the deterministic grounded draft.
                 if phrased and _grounded(phrased, "\n".join(facts) + " " + payload.message):
                     payload.message = phrased
         return payload

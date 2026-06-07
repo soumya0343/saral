@@ -1,4 +1,4 @@
-"""Supervisor-orchestrated agent graph (TRD §10, §11, §13.4).
+"""Supervisor-orchestrated agent graph.
 
 The supervisor routes; specialists work. Identity runs before any data read; Compliance is a
 gate, not a peer. State-changing actions pass through step-up → write-confirmation before they
@@ -49,7 +49,7 @@ _gate = ComplianceGate()
 _synth = SynthesisAgent()
 
 # Deterministic reply when an info answer is ungrounded (retrieval below floor) — we escalate
-# rather than invent a clause we have no passage for (ADR-0002/FR-18).
+# rather than invent a clause we have no passage for.
 _UNGROUNDED = {
     Language.EN: "I don't have a confident answer for that, so I'm connecting you with a human agent who can help.",  # noqa: E501
     Language.HI: "मेरे पास इसका भरोसेमंद उत्तर नहीं है, इसलिए मैं आपको एक मानव एजेंट से जोड़ रहा हूँ।",  # noqa: E501
@@ -74,7 +74,7 @@ async def triage_node(state: RunState) -> dict:
         "entities": entities,
         "step_count": 1,
     }
-    # Sarvam language-detect failed -> deterministic fallback served; flag degraded (TRD §15).
+    # Sarvam language-detect failed -> deterministic fallback served; flag degraded.
     if degraded:
         out["degraded_agents"] = ["triage:sarvam"]
     return out
@@ -89,7 +89,7 @@ def _injection_blocked(state: RunState) -> bool:
     return any(
         d.actor == "injection_guard" and d.decision == "block"
         for d in state.compliance_decisions
-    )
+)
 
 
 def _suspend(status: str, message: str, **extra) -> dict:
@@ -99,7 +99,7 @@ def _suspend(status: str, message: str, **extra) -> dict:
         "status": status,
         "final_response": ResponsePayload(
             resolution_status="awaiting", message=message, escalated=False
-        ),
+),
         "step_count": 1,
     }
     up.update(extra)
@@ -107,13 +107,13 @@ def _suspend(status: str, message: str, **extra) -> dict:
 
 
 async def identity_node(state: RunState) -> dict:
-    """Identity gate (TRD §12.1.5): derive purpose-limitation domains and gate writes.
+    """Identity gate: derive purpose-limitation domains and gate writes.
 
     Deterministic. Never raises auth_level itself; for a state-changing action it drives
     step-up (OTP) then write-confirmation, suspending the run between turns.
     """
     # Long-term memory is on-demand: the Interaction-history domain is authorized only when
-    # the customer's question references past interactions (CONTEXT 'Long-term memory').
+    # the customer's question references past interactions.
     wants_history = bool(state.entities.get("wants_history"))
     up: dict = {
         "allowed_domains": domains_for(state.intents, include_history=wants_history),
@@ -135,12 +135,12 @@ async def identity_node(state: RunState) -> dict:
 
     # Stale pending write: past its TTL, execution authority has expired. Discard it so the
     # write is rebuilt fresh (new nonce) and re-earns step-up + confirmation — never auto-fires
-    # off an old confirmation (ADR-0004 "authority is mortal").
+    # off an old confirmation ("authority is mortal").
     if state.pending_write is not None and is_stale(state.pending_write):
         log.info("identity.pending_write_stale", run_id=state.run_id, tool=state.pending_write.tool)
         state = state.model_copy(update={"pending_write": None, "challenge_response": None})
 
-    # Resume "no" → abandon the pending write (execution authority is mortal; CONTEXT).
+    # Resume "no" → abandon the pending write (execution authority is mortal).
     if state.pending_write is not None and parse_confirmation(state.resume_reply or "") == "no":
         return {
             "route": "suspend",
@@ -150,7 +150,7 @@ async def identity_node(state: RunState) -> dict:
                 resolution_status="resolved",
                 message="Okay, I've cancelled that change. Anything else?",
                 escalated=False,
-            ),
+),
             "step_count": 1,
         }
 
@@ -161,7 +161,7 @@ async def identity_node(state: RunState) -> dict:
         nonce = state.intent_nonce + 1
         pending = build_pending_write(
             state.conversation_id, intent, state.entities, state.raw_message, nonce
-        )
+)
         if pending is None:
             # Missing argument → clarification (soft signal), not step-up.
             q = "What should I update — mobile or email — and to what value?"
@@ -182,7 +182,7 @@ async def identity_node(state: RunState) -> dict:
                 transcript_ref=state.conversation_id,
                 pending_action=pending.tool,
                 sla_target="4h",
-            )
+)
             return {
                 "route": "suspend",
                 "status": "escalated",
@@ -193,16 +193,16 @@ async def identity_node(state: RunState) -> dict:
                     message=(
                         "I couldn't verify the one-time code, so I've escalated this to a "
                         "human agent who will follow up."
-                    ),
+),
                     escalated=True,
-                ),
+),
                 "step_count": 1,
             }
         chal = request_step_up(state.user_id)
         prompt = (
             f"To {pending.tool.replace('_', ' ')}, I need to verify it's you. "
             "I've sent a one-time code."
-        )
+)
         if chal.get("test_otp"):
             prompt += f" (test code: {chal['test_otp']})"
         prompt += " Please reply with the code."
@@ -213,7 +213,7 @@ async def identity_node(state: RunState) -> dict:
             intent_nonce=nonce,
             step_up_owed=True,
             challenge_id=chal["challenge_id"],
-        )
+)
 
     # auth_level == step_up. Confirmed? → execute; else read back for confirmation.
     if parse_confirmation(state.resume_reply or "") == "yes":
@@ -229,7 +229,7 @@ async def identity_node(state: RunState) -> dict:
         pending_write=pending,
         intent_nonce=nonce,
         step_up_owed=False,
-    )
+)
 
 
 def _route(state: RunState) -> str:
@@ -255,14 +255,14 @@ async def supervisor_node(state: RunState) -> dict:
 
 
 async def rag_node(state: RunState) -> dict:
-    # Per-customer scoped retrieval (FR-16): pass verified user_id + allowed domains.
+    # Per-customer scoped retrieval: pass verified user_id + allowed domains.
     try:
         passages = await _rag.run(
             state.raw_message,
             user_id=state.user_id,
             allowed_domains=state.allowed_domains,
-        )
-        # Score-floor groundedness gate (ADR-0002/FR-18): if the best passage is below the
+)
+        # Score-floor groundedness gate: if the best passage is below the
         # floor, the answer would be ungrounded — escalate rather than invent a clause.
         floor = get_settings().retrieval_score_floor
         top = max((p.score for p in passages), default=0.0)
@@ -286,7 +286,7 @@ async def action_node(state: RunState) -> dict:
             state.run_id,
             state.raw_message,
             pending_write=state.pending_write,
-        )
+)
         return {"actions": records, "step_count": 1}
     except Exception as e:  # noqa: BLE001
         log.error("node.failed", node="action", run_id=state.run_id, error=str(e))
@@ -295,14 +295,14 @@ async def action_node(state: RunState) -> dict:
 
 async def synthesis_node(state: RunState) -> dict:
     # Ungrounded info answer (retrieval below floor): escalate instead of generating from
-    # weak/empty passages (ADR-0002/FR-18). Deterministic wording, no LLM.
+    # weak/empty passages. Deterministic wording, no LLM.
     if state.ungrounded:
         lang = state.language or Language.EN
         response = ResponsePayload(
             resolution_status="escalated",
             message=redact_pii(_UNGROUNDED.get(lang, _UNGROUNDED[Language.EN])),
             escalated=True,
-        )
+)
         primary = next((i.action or str(i.type) for i in state.intents), "unknown")
         return {
             "final_response": response,
@@ -316,7 +316,7 @@ async def synthesis_node(state: RunState) -> dict:
                 blocking_reason="retrieval_below_floor",
                 transcript_ref=state.conversation_id,
                 sla_target="4h",
-            ),
+),
         }
 
     ctx = SynthesisContext(
@@ -326,16 +326,16 @@ async def synthesis_node(state: RunState) -> dict:
         actions=state.actions,
         decisions=state.compliance_decisions,
         degraded=state.degraded_agents,
-    )
+)
     response = await _synth.run(ctx)
-    response.message = redact_pii(response.message)  # pre-send gate (FR-6)
+    response.message = redact_pii(response.message) # pre-send gate
     status = _STATUS_FROM_RESOLUTION.get(response.resolution_status, "resolved")
     if state.degraded_agents and status == "resolved":
         status = "degraded"
         response.resolution_status = "degraded"
 
     update: dict = {"final_response": response, "status": status, "step_count": 1}
-    # Escalation as a real artifact (TRD §12.7): emit a record on any escalated outcome.
+    # Escalation as a real artifact: emit a record on any escalated outcome.
     if status == "escalated" and state.escalation is None:
         primary = next((i.action or str(i.type) for i in state.intents), "unknown")
         update["escalation"] = EscalationRecord(
@@ -347,7 +347,7 @@ async def synthesis_node(state: RunState) -> dict:
             transcript_ref=state.conversation_id,
             pending_action=state.pending_write.tool if state.pending_write else None,
             sla_target="4h",
-        )
+)
     return update
 
 
@@ -384,7 +384,7 @@ def _assemble() -> StateGraph:
         "supervisor",
         _branch,
         {"rag": "rag", "action": "action", "synthesis": "synthesis", "end": END},
-    )
+)
     g.add_edge("rag", "synthesis")
     g.add_edge("action", "synthesis")
     g.add_edge("synthesis", END)

@@ -59,7 +59,7 @@ crash-resume, horizontal scaling, and partial-failure isolation.
 | Language | Python **3.12+** (uv-managed, `uv.lock`) |
 | Web | FastAPI `0.115+`, uvicorn, `sse-starlette` (token-trace streaming) |
 | Orchestration | **LangGraph** `0.2.60+` (StateGraph), `langchain-core` |
-| DB | PostgreSQL 16 via SQLAlchemy `2.0` async + `asyncpg`; Alembic migrations |
+| DB | PostgreSQL 16 via SQLAlchemy `2.0` async + `asyncpg` (`psycopg` for sync/migrations); Alembic |
 | Queue | Redis 7 Streams (consumer groups) |
 | LLM SDKs | `anthropic`; Sarvam/Gemini/Groq/Cerebras via OpenAI-compat HTTP |
 | Retrieval | `rank-bm25` (lexical) + `sentence-transformers` (multilingual-e5, optional) |
@@ -81,17 +81,22 @@ sarvam/
 ├── backend/saral/          # application (see §4)
 ├── frontend/               # Next.js chat UI + /eval dashboard
 ├── data/
-│   ├── customers/          # 3 hero customers (U1001/U1003/U1010) + ~15 thin (leak tests)
+│   ├── customers/          # 3 hero customers (U1001/U1003/U1010) + 12 thin (leak tests)
 │   ├── policy_corpus/      # 10 tenant-wide policy/FAQ markdown docs
-│   ├── scenarios/          # ~95 labeled eval scenarios (scenarios.yaml)
+│   ├── scenarios/          # ~95 eval scenarios (scenarios.yaml 28 + scenarios_expansion.yaml 67)
 │   └── eval_reports/       # JSON run reports
-├── tests/                  # ~20 pytest files; conftest forces offline determinism
-├── docs/DEPLOY.md          # Fly / Render / Vercel runbook
+├── tests/                  # 19 pytest files + conftest (forces offline determinism)
+├── docs/
+│   ├── DEPLOY.md           # Fly / Render / Vercel runbook
+│   └── adr/                # 4 ADRs (see §15)
+├── .claude/                # Saral_PRD_TRD.md, CONTEXT.md — product/terminology source
+├── .github/                # CI workflows
 ├── Dockerfile.api          # uvicorn image (ships data/ read-only)
 ├── Dockerfile.worker       # worker image
 ├── docker-compose.yml      # local: postgres + redis + api + worker
 ├── fly.toml                # Fly: app + worker process groups (region bom)
 ├── render.yaml             # Render Blueprint: api, worker, PG, Redis
+├── Makefile                # dev/test/deploy targets
 ├── pyproject.toml / uv.lock
 ├── alembic.ini
 └── .env.example            # all config knobs (safe dev defaults)
@@ -127,9 +132,28 @@ sarvam/
 
 1. **Identify** — `POST /customers` resolves name/mobile/email → `user_id`.
 2. **Start** — `POST /conversations` mints a **session token** (JWT, derived from mock IdP — never trusted from message body).
-3. **Message** — `POST /conversations/{id}/messages` validates token, builds a `RunRequest`, enqueues it on Redis stream `agent-runs`, returns immediately. Client opens **SSE** (`GET /conversations/{id}/sse`) for live trace events.
+3. **Message** — `POST /conversations/{id}/messages` validates token, builds a `RunRequest`, enqueues it on Redis stream `agent-runs`, returns immediately. Client opens **SSE** (`GET /conversations/{id}/stream`) for live trace events.
 4. **Execute** — worker `XREADGROUP`s the request, loads any checkpoint (thread_id = run_id), runs the graph, streams trace events to Redis pub/sub (relayed to SSE), persists final state.
 5. **Reply / resume** — if the run suspended (awaiting OTP or confirmation), `POST /conversations/{id}/reply` re-enqueues with `resume_reply` / `challenge_response`; the worker resumes from checkpoint.
+
+### HTTP endpoints
+
+| Method · Path | Module | Purpose |
+|---|---|---|
+| `POST /customers` | routes | identify customer (name/mobile/email → user_id) |
+| `POST /conversations` | routes | start conversation, mint session token |
+| `POST /conversations/{id}/messages` | routes | send message → enqueue run |
+| `POST /conversations/{id}/reply` | routes | resume from awaiting_input / awaiting_confirmation |
+| `GET /conversations/{id}/stream` | routes | SSE trace event stream |
+| `GET /conversations/{id}/messages` | routes | conversation history |
+| `DELETE /users/{user_id}/data` | routes | DPDP erasure (tombstone PII) |
+| `POST /escalations/{id}/resolve` | routes | operator handoff / close-out |
+| `POST /session` | auth_routes | mint session token |
+| `POST /step-up` | auth_routes | submit OTP challenge response |
+| `POST /eval/run` | eval_routes | run the eval suite |
+| `GET /eval/report` | eval_routes | latest eval report |
+| `GET /eval/reports` | eval_routes | all eval reports |
+| `GET /health` | app | health check (Fly/Render probe) |
 
 ---
 
@@ -345,6 +369,16 @@ Key tunables:
 | `TOOL_TIMEOUT_S` | 10.0 | per-tool timeout |
 | `EMBEDDER` | sentence-transformer | `hashing` offline floor |
 | `PII_BACKEND` | regex | `presidio` for prod NER |
+| `STORE_BACKEND` | memory | `postgres` for prod (mock core-system store) |
+| `CHECKPOINT_BACKEND` | memory | LangGraph checkpoint storage |
+| `LLM_RETRY_CAP` | 2 | retries per provider before fallback |
+| `TRIAGE_LLM_LANGUAGE` | true | use Sarvam `/text-lid` for language detection |
+| `CONVERSATION_MEMORY_TURNS` | 8 | short-term context window |
+| `CONFIG_VERSION` | v1 | pins eval comparability (no mid-suite drift) |
+| `JUDGE_KAPPA_FLOOR` | 0.6 | per-language judge trust threshold |
+
+Full `Settings` has ~56 fields (per-provider keys/models/URLs, paths, Redis stream names, reclaim
+tuning). The above are the behavioral knobs; see [`backend/saral/config.py`](backend/saral/config.py) for the rest.
 
 **Deploy targets** (`docs/DEPLOY.md`):
 - **Fly.io** — region `bom` (Mumbai; DPDP residency + Sarvam proximity), app + worker process
@@ -367,4 +401,12 @@ Same image, two process commands. `data/` (corpus + customers + scenarios) is ba
 - **Runs offline.** Stub LLM + hashing embedder make the full system deterministic and CI-friendly.
 - **Auditable & erasable.** Hash-chained PII-free audit (7yr) coexists with DPDP erasure.
 - **Event-driven.** API enqueues; worker executes with checkpoint/resume and partial-failure isolation.
-```
+
+### Architecture decision records ([`docs/adr/`](docs/adr/))
+
+| ADR | Decision |
+|---|---|
+| [0001](docs/adr/0001-identity-model.md) | Token-derived identity + step-up for writes |
+| [0002](docs/adr/0002-purpose-bound-retrieval.md) | Purpose-bound retrieval (score floor → escalate, don't invent) |
+| [0003](docs/adr/0003-free-providers-and-multilingual-embeddings.md) | Free LLM providers + multilingual-e5 embeddings |
+| [0004](docs/adr/0004-two-mechanism-resume.md) | Two-mechanism resume; stale write authority is mortal |

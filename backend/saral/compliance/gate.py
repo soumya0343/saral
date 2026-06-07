@@ -1,6 +1,6 @@
 """Compliance gate.
 
-Runs before any state-changing action and before any response is sent (TRD §11.2). It is
+Runs before any state-changing action and before any response is sent. It is
 sequential, deterministic, and fails closed: ambiguity becomes block + escalate rather than
 allow. Emits a ComplianceDecision per check, each logged to the audit trail.
 """
@@ -34,7 +34,7 @@ class ComplianceGate:
             # A detected injection blocks the whole run; no point authorizing actions.
             return decisions
 
-        # 2) Referenced-id ownership — impersonation defense (TRD §18.1). A message naming
+        # 2) Referenced-id ownership — impersonation defense. A message naming
         # ANOTHER customer's claim/policy id is blocked regardless of intent, so impersonation
         # phrased as an explanation ("why was claim X rejected") can never leak or act.
         _ID_ACTIONS = (("get_claim_status", "claim_id"), ("get_policy_details", "policy_id"))

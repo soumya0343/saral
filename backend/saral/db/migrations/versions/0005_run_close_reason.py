@@ -1,4 +1,4 @@
-"""run lifecycle: close_reason + closed_at on agent_runs (CONTEXT 'Run')
+"""run lifecycle: close_reason + closed_at on agent_runs
 
 Revision ID: 0005
 Revises: 0004

@@ -1,10 +1,10 @@
 """Orphan reaper: abandon suspended conversations whose pending write has out-lived its TTL.
 
 A confirmation/clarification suspends the run and persists a `pending_write`; if the customer
-never replies, that write's execution authority must expire (ADR-0004 "authority is mortal").
+never replies, that write's execution authority must expire ("authority is mortal").
 This job scans suspended conversations, and for any whose pending write is past its TTL:
   - clears the suspend custody and marks the conversation `abandoned`,
-  - records a terminal `orphaned` AgentRun close (CONTEXT 'Run': abnormal close, not data-loss),
+  - records a terminal `orphaned` AgentRun close (: abnormal close, not data-loss),
   - emits an `orphan_ttl` Escalation so a human can follow up.
 A stale write is NEVER auto-fired; if the customer returns, resume re-earns step-up + confirm.
 """

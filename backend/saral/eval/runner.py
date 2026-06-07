@@ -45,17 +45,17 @@ async def _run_one(scenario: Scenario, judge: Judge) -> ScenarioResult:
         user_id=scenario.user_id,
         auth_level=AuthLevel(scenario.auth_level),
         raw_message=scenario.message,
-    )
+)
     t0 = time.perf_counter()
     state = RunState.model_validate(await graph.ainvoke(init))
 
     # Drive a suspended write through step-up + confirmation (a verified, confirming customer),
-    # so the eval measures the full resolution path and tool sequence (FR-14/15/19).
+    # so the eval measures the full resolution path and tool sequence .
     if (
         scenario.complete_stepup
         and state.pending_write is not None
         and state.status in ("awaiting_input", "awaiting_confirmation")
-    ):
+):
         resume = RunState(
             run_id=f"eval-{scenario.id}-confirm",
             conversation_id=f"eval-{scenario.id}",
@@ -65,7 +65,7 @@ async def _run_one(scenario: Scenario, judge: Judge) -> ScenarioResult:
             pending_write=state.pending_write,
             intent_nonce=state.pending_write.intent_nonce,
             resume_reply="yes",
-        )
+)
         state = RunState.model_validate(await graph.ainvoke(resume))
 
     latency_ms = int((time.perf_counter() - t0) * 1000)
@@ -76,7 +76,7 @@ async def _run_one(scenario: Scenario, judge: Judge) -> ScenarioResult:
             "expected": scenario.expected.model_dump(),
             "actual": actual_outcome(state),
         }
-    )
+)
     return evaluate_scenario(scenario, state, latency_ms, verdict)
 
 
@@ -112,7 +112,7 @@ async def run_eval(*, persist: bool = True, save_report: bool = True) -> EvalRep
         results=results,
         regressions=_regressions(summary, prior),
         prior_version=prior.config_version if prior else None,
-    )
+)
 
     if save_report:
         await asyncio.to_thread(write_report, report, settings.eval_reports_dir)
@@ -148,7 +148,7 @@ def _log_summary(report: EvalReport) -> None:
         judge_kappa=s.judge_kappa_by_language,
         judge_untrusted=s.judge_untrusted_languages,
         regressions=report.regressions,
-    )
+)
 
 
 def main() -> None:
@@ -173,7 +173,7 @@ def main() -> None:
         print(
             f"  judge UNTRUSTED (kappa<floor): {s.judge_untrusted_languages}"
             " — resolution metric needs human review"
-        )
+)
     if report.regressions:
         print(f"  REGRESSIONS vs {report.prior_version}: {report.regressions}")
     else:

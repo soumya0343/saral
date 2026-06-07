@@ -1,6 +1,6 @@
 """Embeddings for the dense half of hybrid retrieval.
 
-Two embedders, split by role (ADR-0003 "Free-only provider stack"):
+Two embedders, split by role ("Free-only provider stack"):
 
   - `SentenceTransformerEmbedder` (multilingual-e5) is the LIVE path. A local multilingual
     model is what makes per-customer Hindi/Hinglish retrieval — the differentiator — return

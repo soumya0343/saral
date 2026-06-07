@@ -15,7 +15,7 @@ class Language(StrEnum):
 
 
 class AuthLevel(StrEnum):
-    """Verification tier derived from the customer's token (TRD §11.5, CONTEXT 'Auth level').
+    """Verification tier derived from the customer's token.
 
     Ordered: a read action needs >= SESSION; a state-changing action needs STEP_UP.
     """
@@ -30,7 +30,7 @@ class AuthLevel(StrEnum):
 
 
 class CloseReason(StrEnum):
-    """Terminal reason a run closed (CONTEXT 'Run'). Abnormal closes are never context-loss:
+    """Terminal reason a run closed. Abnormal closes are never context-loss:
     the transcript + close_reason + closed_at are retained even when a run ends badly."""
 
     RESOLVED = "resolved"
@@ -130,7 +130,7 @@ ComplianceVerdict = Literal["allow", "block", "escalate"]
 
 
 class ReasonCode(StrEnum):
-    """Enum reason a compliance/identity decision was made (CONTEXT 'Reason code').
+    """Enum reason a compliance/identity decision was made.
 
     Recorded in the audit log instead of prose-with-identifiers, so the log leaks no PII; the
     human-readable story is reconstructed from the code via REASON_CODE_DISPLAY.
@@ -168,15 +168,15 @@ class ComplianceDecision(BaseModel):
     reason_code: ReasonCode | None = None  # enum recorded in the audit log (PII-free)
 
 
-# --- Write confirmation + identifiers (TRD §12.5.1, §13.4) ---
+# --- Write confirmation + identifiers ---
 
 
 class PendingWrite(BaseModel):
     """A state-changing action read back, awaiting the customer's confirmation.
 
-    Its execution authority is mortal (CONTEXT 'Pending write'): a stale pending write never
+    Its execution authority is mortal: a stale pending write never
     auto-fires — resume re-earns step-up + confirm. The idempotency key is conversation-anchored
-    (not run-anchored) so a crash-resume re-uses the same key (TRD §13.4, §15).
+    (not run-anchored) so a crash-resume re-uses the same key.
     """
 
     tool: str
@@ -189,7 +189,7 @@ class PendingWrite(BaseModel):
     created_at: float | None = None  # epoch seconds; past TTL the write is abandoned, never fires
 
 
-# --- Escalation / human handoff (TRD §12.7) ---
+# --- Escalation / human handoff ---
 
 
 class EscalationRecord(BaseModel):
@@ -203,7 +203,7 @@ class EscalationRecord(BaseModel):
     sla_target: str  # e.g. "4h"
 
 
-# --- Final response (Synthesis output schema, TRD §12.6) ---
+# --- Final response (Synthesis output schema) ---
 
 ResolutionStatus = Literal["resolved", "escalated", "blocked", "degraded", "awaiting"]
 
@@ -253,7 +253,7 @@ class HistoryTurn(BaseModel):
 class RunRequest(BaseModel):
     run_id: str
     conversation_id: str
-    user_id: str  # token-derived only (TRD §11.5); never read from the message body
+    user_id: str # token-derived only; never read from the message body
     tenant_id: str = "t_demo"
     auth_level: AuthLevel = AuthLevel.SESSION  # derived from the validated session token
     message: str

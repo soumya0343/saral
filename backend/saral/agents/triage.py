@@ -2,8 +2,8 @@
 
 Detects language (En/Hi/Hinglish), classifies intent(s), and extracts entities into an
 `IntentResult`. Language detection uses Sarvam's /text-lid endpoint (the Indian-language
-differentiator, TRD §12.2); intent classification and entity extraction stay deterministic
-(they drive compliance + tool selection, so correctness over flexibility — TRD §11.3). The
+differentiator); intent classification and entity extraction stay deterministic
+(they drive compliance + tool selection, so correctness over flexibility —). The
 deterministic classifier below doubles as the StubProvider handler, so triage works with no
 API key and stays reproducible for eval.
 """
@@ -69,7 +69,7 @@ _INFORMATION = {
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
 # History-seeking phrasing: authorizes the Interaction-history domain on demand (long-term
-# memory, CONTEXT). Never eager — only when the customer references their past interactions.
+# memory). Never eager — only when the customer references their past interactions.
 _HISTORY = {
     "last time", "previously", "previous", "earlier", "before", "my history",
     "past complaint", "past ticket", "last call", "spoke earlier", "told you",
@@ -137,7 +137,7 @@ def classify_intents(text: str) -> list[Intent]:
     has_claim_id = bool(_CLAIM_RE.search(text))
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
         "क्लेम" in text and "स्टेटस" in text
-    )
+)
     # "Why was my claim CLM2010 rejected/reduced" is an EXPLANATION (grounded retrieval), not a
     # status lookup — the claim id is retrieval context. Suppress get_claim_status so it routes
     # to pure RAG, unless the customer explicitly asked for "status".
@@ -155,7 +155,7 @@ def classify_intents(text: str) -> list[Intent]:
     if policy_lookup:
         intents.append(
             Intent(type=IntentType.ACTION, action="get_policy_details", confidence=0.85)
-        )
+)
     if not policy_lookup and _hits(lower, {k.lower() for k in _INFORMATION}):
         intents.append(Intent(type=IntentType.INFORMATION, confidence=0.8))
     if not intents and _hits(lower, {k.lower() for k in _GREETING}):
@@ -176,7 +176,7 @@ def classify(text: str) -> IntentResult:
         intents=intents,
         entities=extract_entities(text),
         confidence=max((i.confidence for i in intents), default=0.0),
-    )
+)
 
 
 def _stub_handler(messages: list[Message]) -> IntentResult:
@@ -200,12 +200,12 @@ _SYSTEM_PROMPT = (
 class TriageAgent:
     """Sarvam-backed language detection + deterministic intent/entity classification.
 
-    Intent classification and entity extraction are deterministic (TRD §11.3: correctness
+    Intent classification and entity extraction are deterministic (: correctness
     over flexibility) — they drive compliance and tool selection and are what the eval suite
-    validates. Language detection routes through Sarvam's /text-lid endpoint (TRD §12.2): it
+    validates. Language detection routes through Sarvam's /text-lid endpoint: it
     disambiguates Hinglish (romanized Hindi) from English far better than the regex marker
     list. On Sarvam unavailability the deterministic detector takes over and the run is flagged
-    degraded (TRD §15).
+    degraded.
     """
 
     name = "triage"

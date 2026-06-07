@@ -3,7 +3,7 @@
 Erasure tombstones message content and action args/results for a customer while leaving the
 hash-chained `audit_log` UNTOUCHED — the audit holds only reason codes + tokenized refs (no raw
 PII), so it stays valid (`verify_chain` still passes) and the 7-year regulatory hold and
-right-to-erasure coexist (CONTEXT 'Erasure event'). Withdrawal of consent fires this.
+right-to-erasure coexist. Withdrawal of consent fires this.
 """
 
 from __future__ import annotations

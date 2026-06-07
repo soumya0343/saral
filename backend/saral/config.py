@@ -18,7 +18,7 @@ class Settings(BaseSettings):
         env_file=".env",
         env_file_encoding="utf-8",
         extra="ignore",
-    )
+)
 
     # --- App ---
     app_env: Literal["dev", "test", "prod"] = "dev"
@@ -29,7 +29,7 @@ class Settings(BaseSettings):
     database_url: str = Field(
         default="postgresql+asyncpg://saral:saral@localhost:5432/saral",
         description="Async SQLAlchemy (asyncpg) DSN.",
-    )
+)
     redis_url: str = "redis://localhost:6379/0"
     # Mock core-system store: "postgres" (durable, live) or "memory" (in-proc SQLite, tests).
     store_backend: Literal["memory", "postgres"] = "memory"
@@ -45,7 +45,7 @@ class Settings(BaseSettings):
     sarvam_api_key: str | None = None
     sarvam_base_url: str = "https://api.sarvam.ai"
     anthropic_api_key: str | None = None
-    # Free-tier providers, all OpenAI-compatible (ADR-0003 per-role free stack).
+    # Free-tier providers, all OpenAI-compatible (per-role free stack).
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
     groq_model: str = "llama-3.3-70b-versatile"
@@ -57,7 +57,7 @@ class Settings(BaseSettings):
     gemini_model: str = "gemini-2.0-flash"
     # Default ordered fallback chain; providers without a key are skipped, then stub.
     llm_provider_order: str = "sarvam,anthropic,stub"
-    # Per-role chains (ADR-0003): models assigned per role, not one global chain. A blank role
+    # Per-role chains: models assigned per role, not one global chain. A blank role
     # falls back to llm_provider_order. Synthesis -> Hindi-strong Gemini; triage-classify ->
     # fast Groq/Cerebras; judge is PINNED (no mid-suite swap that would break comparability).
     llm_role_synthesis: str = "gemini,sarvam,stub"
@@ -65,24 +65,24 @@ class Settings(BaseSettings):
     llm_role_judge: str = "gemini,stub"
     anthropic_model: str = "claude-sonnet-4-6"
     sarvam_model: str = "sarvam-30b"
-    # Use Sarvam /text-lid for language detection (TRD §12.2). When the key is absent or
-    # Sarvam is down, triage falls back to the deterministic regex detector (TRD §15).
+    # Use Sarvam /text-lid for language detection. When the key is absent or
+    # Sarvam is down, triage falls back to the deterministic regex detector.
     triage_llm_language: bool = True
 
     # --- Retrieval ---
     corpus_dir: str = "data/policy_corpus"
-    customers_dir: str = "data/customers"  # per-customer document-fidelity docs (FR-16)
+    customers_dir: str = "data/customers" # per-customer document-fidelity docs
     # Live path uses local multilingual-e5 (cross-lingual semantics for Hindi/Hinglish
     # per-customer retrieval — the differentiator). "hashing" is the offline/CI floor
-    # (deterministic, no extra dep); conftest forces it for reproducible eval. ADR-0003.
+    # (deterministic, no extra dep); conftest forces it for reproducible eval..
     embedder: Literal["hashing", "sentence-transformer"] = "sentence-transformer"
     embedder_model: str = "intfloat/multilingual-e5-small"
     retrieval_top_k: int = 4
-    # Below this top-passage score an information answer is ungrounded -> escalate (FR-18,
-    # ADR-0002). Calibrated for e5 cosine/RRF; hashing uses a different scale (kept 0.0 in CI).
+    # Below this top-passage score an information answer is ungrounded -> escalate.
+    # Calibrated for e5 cosine/RRF; hashing uses a different scale (kept 0.0 in CI).
     retrieval_score_floor: float = 0.0
 
-    # --- Identity & Auth (TRD §11.5) ---
+    # --- Identity & Auth ---
     # Mock IdP signing secret (HS256). Dev default is insecure on purpose; set in prod.
     session_secret: str = "dev-insecure-change-me-0000000000000000"  # >=32 bytes (HS256)
     session_ttl_min: int = 30  # short-TTL session token
@@ -93,7 +93,7 @@ class Settings(BaseSettings):
 
     # --- Compliance ---
     pii_backend: Literal["regex", "presidio"] = "regex"
-    # Retention (CONTEXT 'Retention'): redacted messages purged after N days; the hash-chained
+    # Retention: redacted messages purged after N days; the hash-chained
     # audit log is held for the regulatory term (erasure-compatible — it holds no raw PII).
     message_retention_days: int = 90
     audit_retention_years: int = 7
@@ -103,8 +103,8 @@ class Settings(BaseSettings):
     scenarios_path: str = "data/scenarios/scenarios.yaml"
     eval_reports_dir: str = "data/eval_reports"
     # A judge whose Cohen's kappa vs human labels is below this floor in a language is not
-    # trusted there — that language's resolution metric is gated behind human review (CONTEXT
-    # 'Judge'). Languages with too few/unanimous labels are also treated as un-validated.
+    # trusted there — that language's resolution metric is gated behind human review.
+    # Languages with too few/unanimous labels are also treated as un-validated.
     judge_kappa_floor: float = 0.6
 
     # --- Agent control ---
@@ -117,7 +117,7 @@ class Settings(BaseSettings):
     checkpoint_backend: Literal["memory", "postgres"] = "memory"
     claim_min_idle_ms: int = 30000  # XAUTOCLAIM: reclaim pending entries idle longer than this
     reclaim_batch: int = 10
-    # Pending-write execution authority is mortal (ADR-0004): past this TTL a suspended write
+    # Pending-write execution authority is mortal: past this TTL a suspended write
     # is abandoned and never auto-fires; the orphan reaper closes the run + escalates. The
     # dedup window is tied to the same TTL (keys are purged together).
     pending_write_ttl_s: int = 86400  # 24h
@@ -128,7 +128,7 @@ class Settings(BaseSettings):
         return [p.strip() for p in self.llm_provider_order.split(",") if p.strip()]
 
     def role_chain(self, role: str) -> list[str]:
-        """Provider chain for a role (ADR-0003). Falls back to the default chain if unset."""
+        """Provider chain for a role. Falls back to the default chain if unset."""
         raw = {
             "synthesis": self.llm_role_synthesis,
             "triage": self.llm_role_triage,

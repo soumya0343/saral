@@ -2,7 +2,7 @@
 
 Phase 1: conversations + messages. Later phases: agent_runs, action_records, audit_log,
 eval_results. v2 adds suspend/resume state on the conversation, an escalations table, and
-tokenized (no-raw-PII) audit refs (TRD §16).
+tokenized (no-raw-PII) audit refs.
 """
 
 from __future__ import annotations
@@ -28,7 +28,7 @@ class Conversation(Base, TimestampMixin):
     status: Mapped[str] = mapped_column(String(32), default="active", nullable=False)
     consent_status: Mapped[str] = mapped_column(String(16), default="granted", nullable=False)
 
-    # --- suspend/resume custody (TRD §13.2/§13.4) ---
+    # --- suspend/resume custody ---
     # The current session token (mock IdP custody for the demo); re-validated on every resume.
     session_token: Mapped[str | None] = mapped_column(Text, nullable=True)
     suspend_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
@@ -76,7 +76,7 @@ class AgentRun(Base, TimestampMixin):
     step_count: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
     latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     cost_usd: Mapped[float | None] = mapped_column(Float, nullable=True)
-    # Terminal close (CONTEXT 'Run'): a run that ends — normally or abnormally — records why
+    # Terminal close: a run that ends — normally or abnormally — records why
     # and when, so an abnormal close is never silent context-loss. Null while suspended.
     close_reason: Mapped[str | None] = mapped_column(String(16), nullable=True)
     closed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
@@ -94,14 +94,14 @@ class ActionRecordRow(Base, TimestampMixin):
     args: Mapped[dict] = mapped_column(JSONB, default=dict)  # redacted
     idempotency_key: Mapped[str | None] = mapped_column(String(128), nullable=True)
     intent_nonce: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
-    # intent_logged | result | abandoned (TRD §16)
+    # intent_logged | result | abandoned
     state: Mapped[str] = mapped_column(String(16), default="result", nullable=False)
     ok: Mapped[bool] = mapped_column(default=False)
     result: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
 
 
 class AuditLog(Base, TimestampMixin):
-    """Append-only, hash-chained decision log for tamper evidence (TRD §16).
+    """Append-only, hash-chained decision log for tamper evidence.
 
     Holds NO raw PII — only reason codes and tokenized refs (`user_ref` = hash(tenant,user),
     `args_hash` = hash(canonical_args)) — so the 7-year hold stays erasure-compatible.
@@ -126,7 +126,7 @@ class AuditLog(Base, TimestampMixin):
 
 
 class Escalation(Base, TimestampMixin):
-    """Human-handoff record (TRD §12.7). Terminal for the run; the conversation stays durable."""
+    """Human-handoff record. Terminal for the run; the conversation stays durable."""
 
     __tablename__ = "escalations"
 
@@ -140,7 +140,7 @@ class Escalation(Base, TimestampMixin):
     transcript_ref: Mapped[str] = mapped_column(String(64), nullable=False)
     sla_target: Mapped[str] = mapped_column(String(16), nullable=False)
     operator_reply: Mapped[str | None] = mapped_column(Text, nullable=True)
-    # Operator audit (ADR-0001): the operator is audit-only — never a graph actor. We record
+    # Operator audit: the operator is audit-only — never a graph actor. We record
     # who handled the escalation and when, but an operator never drives a turn or fires a tool.
     handled_by: Mapped[str | None] = mapped_column(String(64), nullable=True)
     handled_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)

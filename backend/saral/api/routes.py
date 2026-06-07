@@ -1,6 +1,6 @@
-"""Conversation + message + resume + SSE stream routes (TRD §17).
+"""Conversation + message + resume + SSE stream routes.
 
-Identity is token-derived (TRD §11.5): the conversation holds a session token (mock-IdP
+Identity is token-derived: the conversation holds a session token (mock-IdP
 custody for the demo) that is re-validated on every message and every resume. A write
 suspends the run; `/reply` resumes it — re-validating identity and, if the session expired
 during suspension, re-earning step-up before the write fires.
@@ -99,7 +99,7 @@ async def start_conversation(
 
 
 def _claims_or_refresh(convo: Conversation) -> tuple[str, str, AuthLevel, str]:
-    """Re-validate the conversation token (TRD §11.5). On expiry, re-mint a SESSION token —
+    """Re-validate the conversation token. On expiry, re-mint a SESSION token —
     a write that suspended at step_up will then re-earn step-up on resume.
     Returns (user_id, tenant_id, auth_level, token)."""
     token = convo.session_token
@@ -129,7 +129,7 @@ async def _append_message(
         tenant_id=convo.tenant_id,
         conversation_id=convo.id,
         role=role,
-        content=redact_pii(content),  # FR-6: redact PII before store
+        content=redact_pii(content), #: redact PII before store
         sequence_num=next_seq,
     )
     db.add(msg)
@@ -161,8 +161,8 @@ async def send_message(
     convo = await db.get(Conversation, conversation_id)
     if convo is None:
         raise HTTPException(status_code=404, detail="conversation not found")
-    # Consent gate (DPDP): processing proceeds only while consent is granted (CONTEXT
-    # 'Consent status'). A withdrawn conversation is closed to further processing.
+    # Consent gate (DPDP): processing proceeds only while consent is granted.
+    # A withdrawn conversation is closed to further processing.
     if convo.consent_status == "withdrawn":
         raise HTTPException(status_code=403, detail="consent withdrawn; processing halted")
 
@@ -196,7 +196,7 @@ async def reply(
 ) -> MessageAccepted:
     """Resume a suspended run (clarification / step-up OTP / write confirmation).
 
-    Re-validates identity first (TRD §11.5). For an OTP reply, verifies the challenge and
+    Re-validates identity first. For an OTP reply, verifies the challenge and
     re-mints the token at step_up; for a confirmation, carries the persisted pending write
     and the yes/no answer into a fresh run.
     """
@@ -298,7 +298,7 @@ class ResolveEscalation(BaseModel):
 
 @router.post("/escalations/{escalation_id}/resolve", tags=["escalations"])
 async def resolve_escalation_route(escalation_id: str, body: ResolveEscalation) -> dict:
-    """Record which operator handled an escalation, and when (ADR-0001: operator is audit-only —
+    """Record which operator handled an escalation, and when (: operator is audit-only —
     this writes audit metadata; an operator never drives a turn or fires a tool)."""
     from saral.db.repository import resolve_escalation
 

@@ -1,4 +1,4 @@
-"""Evaluation API: run the suite and fetch reports (TRD §17)."""
+"""Evaluation API: run the suite and fetch reports."""
 
 from __future__ import annotations
 

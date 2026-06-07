@@ -1,5 +1,5 @@
 """Groq provider (OpenAI-compatible). Fastest free Llama tier — the latency-critical triage
-intent-classify role (ADR-0003)."""
+intent-classify role."""
 
 from __future__ import annotations
 

@@ -1,4 +1,4 @@
-"""Step-up authentication (TRD §11.5, §14 `request_step_up`).
+"""Step-up authentication (`request_step_up`).
 
 Synthetic mechanism, stated openly: `request_step_up` mints a 6-digit code and, in non-prod,
 returns it in a `test_otp` field (there is no SMS channel). The customer echoes it back as

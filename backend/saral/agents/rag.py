@@ -1,4 +1,4 @@
-"""Knowledge / RAG agent (TRD §12.3).
+"""Knowledge / RAG agent.
 
 Retrieves grounded passages from two sources: the GENERIC corpus (product FAQs, public policy
 templates) and the customer's PER-CUSTOMER documents (their actual policy wording, rider

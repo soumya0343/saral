@@ -1,5 +1,5 @@
 """Cerebras provider (OpenAI-compatible). Free fast Llama tier — triage-classify fallback
-behind Groq (ADR-0003)."""
+behind Groq."""
 
 from __future__ import annotations
 

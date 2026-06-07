@@ -1,7 +1,7 @@
 """LLM client factory + per-role fallback chains.
 
 `get_llm(role)` returns a FallbackLLM that tries the role's configured providers in order
-(ADR-0003 per-role routing), skipping unavailable ones and falling back to the next on
+(per-role routing), skipping unavailable ones and falling back to the next on
 LLMError. The stub is always appended last so the system runs with no API keys.
 """
 
@@ -88,7 +88,7 @@ class FallbackLLM:
 
 @lru_cache
 def get_llm(role: str = "default") -> FallbackLLM:
-    """Build (and cache) the FallbackLLM for a role's provider chain (ADR-0003)."""
+    """Build (and cache) the FallbackLLM for a role's provider chain."""
     settings = get_settings()
     chain = settings.role_chain(role) if role != "default" else settings.provider_chain
     providers: list[LLMClient] = []

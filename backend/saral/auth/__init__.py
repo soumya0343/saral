@@ -1,4 +1,4 @@
-"""Identity & authentication (TRD §11.5).
+"""Identity & authentication.
 
 `user_id` is never trusted from the message body. The mock IdP mints a signed, short-TTL
 session token; Saral validates it and reads `sub` / `tenant_id` / `auth_level` from the

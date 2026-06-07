@@ -1,4 +1,4 @@
-"""Identity gate (TRD §12.1.5, CONTEXT 'Identity gate').
+"""Identity gate.
 
 Deterministic node that runs after triage and before any agent reads customer data. It
 consumes the validated session claims (already on the RunState — token-derived, never from

@@ -1,4 +1,4 @@
-"""Metric computation: per-scenario pass flags + aggregate summary (TRD §18.2)."""
+"""Metric computation: per-scenario pass flags + aggregate summary."""
 
 from __future__ import annotations
 
@@ -49,10 +49,10 @@ def evaluate_scenario(
     if scenario.category == Category.INFORMATION:
         flags["groundedness"] = bool(got["citations"])
     if scenario.expects_personal_citation:
-        # Explanation-groundedness (FR-16): at least one citation must be a per-customer doc.
+        # Explanation-groundedness: at least one citation must be a per-customer doc.
         flags["explanation_groundedness"] = any(
             "/" in c and not c.startswith("http") for c in got["citations"]
-        ) and any(p.is_personal for p in state.retrieved)
+) and any(p.is_personal for p in state.retrieved)
     if exp.status is not None:
         flags["status"] = got["status"] == exp.status
     flags["resolution"] = judge.passed
@@ -71,7 +71,7 @@ def evaluate_scenario(
         metrics=flags,
         judge=judge,
         xling_group=scenario.xling_group,
-    )
+)
 
 
 def _rate(results: list[ScenarioResult], key: str) -> float:
@@ -116,9 +116,9 @@ def summarize(
 
     judge_human = (
         sum(1 for r in agree_total if _agrees(r)) / len(agree_total) if agree_total else None
-    )
-    # Per-language judge-vs-human agreement + chance-corrected Cohen's kappa (TRD §18.2,
-    # CONTEXT 'Judge'). A language is trusted only when kappa is defined AND >= floor.
+)
+    # Per-language judge-vs-human agreement + chance-corrected Cohen's kappa.
+    # A language is trusted only when kappa is defined AND >= floor.
     floor = get_settings().judge_kappa_floor
     by_lang: dict[str, float] = {}
     kappa_by_lang: dict[str, float] = {}
@@ -156,4 +156,4 @@ def summarize(
         judge_agreement_by_language=by_lang,
         judge_kappa_by_language=kappa_by_lang,
         judge_untrusted_languages=untrusted,
-    )
+)

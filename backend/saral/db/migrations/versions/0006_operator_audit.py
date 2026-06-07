@@ -1,4 +1,4 @@
-"""operator audit on escalations: handled_by + handled_at (ADR-0001 operator is audit-only)
+"""operator audit on escalations: handled_by + handled_at (operator is audit-only)
 
 Revision ID: 0006
 Revises: 0005

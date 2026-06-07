@@ -49,9 +49,9 @@ class SarvamProvider:
 
         Returns one of our three supported labels (en/hi/hinglish). Hinglish is hi written
         in Latin script (script_code), which the deterministic regex can only guess at —
-        this is the core Sarvam differentiator (TRD §12.2). Raises LLMError on any transport
+        this is the core Sarvam differentiator. Raises LLMError on any transport
         failure so the caller falls back to the deterministic detector and flags degraded
-        mode (TRD §15).
+        mode.
         """
         if not self.available:
             raise LLMError("sarvam: no API key")

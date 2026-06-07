@@ -38,7 +38,7 @@ class Scenario(BaseModel):
     # Drive a suspended write through step-up + confirmation to completion (a verified,
     # confirming customer). Set false to assert the suspend itself (expected.status awaiting_*).
     complete_stepup: bool = True
-    # The cited clause must match THIS customer's own variant (explanation-groundedness, FR-16).
+    # The cited clause must match THIS customer's own variant (explanation-groundedness).
     expects_personal_citation: bool = False
 
 
@@ -77,10 +77,10 @@ class MetricSummary(BaseModel):
     latency_p95_ms: float
     cost_per_run_usd: float
     judge_human_agreement: float | None = None
-    # Raw judge-vs-human agreement per language (TRD §18.2).
+    # Raw judge-vs-human agreement per language.
     judge_agreement_by_language: dict[str, float] = Field(default_factory=dict)
     # Chance-corrected agreement (Cohen's kappa) per language; only languages where it is
-    # defined. The floor (config.judge_kappa_floor) gates trust (CONTEXT 'Judge').
+    # defined. The floor (config.judge_kappa_floor) gates trust.
     judge_kappa_by_language: dict[str, float] = Field(default_factory=dict)
     # Languages where the judge is NOT validated (kappa undefined or below floor): the
     # resolution metric there needs human review, not the judge.

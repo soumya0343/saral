@@ -136,7 +136,7 @@ async def execute_run(req: RunRequest) -> RunState:
     except TimeoutError as e:
         log.error("run.timeout", run_id=req.run_id, error=str(e))
         await publish_trace(ev("error", data={"error": str(e)}))
-        final_state.status = "timed_out"  # terminal close, recorded with closed_at (CONTEXT)
+        final_state.status = "timed_out" # terminal close, recorded with closed_at
         await _persist(final_state)
     except Exception as e:  # noqa: BLE001 — never hard-crash a run
         log.error("run.error", run_id=req.run_id, error=str(e))
@@ -150,7 +150,7 @@ async def execute_run(req: RunRequest) -> RunState:
 
 
 async def _persist(state: RunState) -> None:
-    """Best-effort persistence of the run + audit chain. Never crashes a run (NFR-2)."""
+    """Best-effort persistence of the run + audit chain. Never crashes a run."""
     from saral.config import get_settings
 
     if get_settings().app_env == "test":

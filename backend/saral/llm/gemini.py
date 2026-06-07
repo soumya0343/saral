@@ -1,7 +1,7 @@
 """Google Gemini provider via its OpenAI-compatible endpoint.
 
 Gemini Flash (free tier) is Hindi-strong, so it serves the synthesis/RAG-explanation role
-(ADR-0003). The OpenAI-compat surface lets it reuse OpenAICompatProvider unchanged.
+. The OpenAI-compat surface lets it reuse OpenAICompatProvider unchanged.
 """
 
 from __future__ import annotations

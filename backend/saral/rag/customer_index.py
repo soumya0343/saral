@@ -1,9 +1,9 @@
-"""Per-customer document index (TRD §12.3, FR-16) — the differentiator.
+"""Per-customer document index — the differentiator.
 
 Loads each hero customer's document-fidelity files (policy schedules with numbered clauses,
 rider variants, claim adjudication notes, correspondence) from `data/customers/`, tagged with
 `customer_id` + data `domain`. Retrieval applies a HARD pre-filter — `customer_id ∧
-allowed-domains` — BEFORE scoring (CONTEXT 'Per-customer scope': never post-rank). A query
+allowed-domains` — BEFORE scoring (: never post-rank). A query
 naming another customer's policy id can never widen this; entities from the message body do
 not relax the filter.
 

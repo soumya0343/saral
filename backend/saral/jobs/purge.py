@@ -1,8 +1,8 @@
-"""Data-retention purge (CONTEXT 'Retention'). Run on a schedule (cron / k8s CronJob).
+"""Data-retention purge. Run on a schedule (cron / k8s CronJob).
 
 Per-table TTL:
   - redacted messages: deleted after `message_retention_days` (default 90d),
-  - dedup idempotency keys: purged at the pending-write TTL (ADR-0004),
+  - dedup idempotency keys: purged at the pending-write TTL,
   - audit_log: held for `audit_retention_years` (default 7y) — erasure-compatible by design,
     since it holds only reason codes + tokenized refs (no raw PII to erase).
 
@@ -47,7 +47,7 @@ async def purge_audit(now: datetime | None = None) -> int:
 
 
 def purge_dedup() -> int:
-    """Purge dedup keys past the pending-write TTL (dedup window tied to TTL, ADR-0004)."""
+    """Purge dedup keys past the pending-write TTL (dedup window tied to TTL)."""
     from saral.tools.store import get_store
 
     return get_store().purge_idempotency(get_settings().pending_write_ttl_s)

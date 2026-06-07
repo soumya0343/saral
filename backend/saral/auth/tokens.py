@@ -1,4 +1,4 @@
-"""Session tokens — the mock IdP (TRD §11.5).
+"""Session tokens — the mock IdP.
 
 The mock auth service IS the IdP for this build: it mints a signed, short-TTL JWT carrying
 `sub` (user_id), `tenant_id`, `auth_level`, and `exp`. Saral validates the signature + expiry
@@ -61,7 +61,7 @@ def raise_auth_level(token: str, new_level: AuthLevel) -> str:
     """Re-mint the SAME identity at a higher auth level after a verified step-up.
 
     Never raises the level on its own — the caller must have validated a challenge first
-    (TRD §11.5 invariant: never raise level without a valid challenge_response).
+    (invariant: never raise level without a valid challenge_response).
     """
     claims = decode_token(token)
     return mint_session_token(

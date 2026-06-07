@@ -1,4 +1,4 @@
-"""Write confirmation + idempotency (TRD §12.5.1, §13.4, §15).
+"""Write confirmation + idempotency.
 
 The idempotency key is conversation-anchored (not run-anchored) so a crash-resume re-uses the
 same key and the mock backend dedups the write. The parsed value is read back to the customer
@@ -15,7 +15,7 @@ from typing import Literal
 from saral.config import get_settings
 from saral.schemas import Intent, PendingWrite
 
-# Multilingual yes/no for confirmation (CONTEXT 'Confirmation resume').
+# Multilingual yes/no for confirmation.
 _YES = {"yes", "y", "confirm", "ok", "okay", "haan", "haa", "ha", "हाँ", "हां", "जी", "sure"}
 _NO = {"no", "n", "cancel", "stop", "nahi", "nahin", "नहीं", "ना", "mat"}
 
@@ -37,7 +37,7 @@ def parse_confirmation(text: str) -> Literal["yes", "no", "unclear"]:
 
 
 def idempotency_key(conversation_id: str, tool: str, args: dict, intent_nonce: int) -> str:
-    """sha256(conversation_id + tool + canonical_args + intent_nonce) — TRD §15."""
+    """sha256(conversation_id + tool + canonical_args + intent_nonce) """
     canonical = json.dumps(args, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
     raw = f"{conversation_id}|{tool}|{canonical}|{intent_nonce}"
     return hashlib.sha256(raw.encode("utf-8")).hexdigest()
@@ -88,11 +88,11 @@ def build_pending_write(
         idempotency_key=idempotency_key(conversation_id, tool, args, intent_nonce),
         intent_nonce=intent_nonce,
         created_at=time.time(),
-    )
+)
 
 
 def is_stale(pw: PendingWrite, now: float | None = None) -> bool:
-    """True if the pending write is past its TTL — execution authority is mortal (CONTEXT
+    """True if the pending write is past its TTL — execution authority is mortal (
     'Pending write'): a stale write is never auto-fired; resume re-earns step-up + confirm."""
     if pw.created_at is None:
         return False

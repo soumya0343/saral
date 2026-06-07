@@ -1,4 +1,4 @@
-"""Mock backend APIs (TRD §14) — thin facade over the durable `Store`.
+"""Mock backend APIs — thin facade over the durable `Store`.
 
 Read-only tools (`get_claim_status`, `get_policy_details`) and state-changing tools
 (`update_contact`, `raise_ticket`, `file_claim`) plus customer identity. All account state

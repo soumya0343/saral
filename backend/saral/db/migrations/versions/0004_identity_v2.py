@@ -22,11 +22,11 @@ def _tenant_col() -> sa.Column:
 
 
 def upgrade() -> None:
-    # tenant_id on every table (multi-institution ready, even single-tenant) — FR-17.
+    # tenant_id on every table (multi-institution ready, even single-tenant) —.
     for table in ("conversations", "messages", "agent_runs", "action_records", "audit_log"):
         op.add_column(table, _tenant_col())
 
-    # Conversation: consent + suspend/resume custody (TRD §13.2/§13.4).
+    # Conversation: consent + suspend/resume custody.
     op.add_column(
         "conversations",
         sa.Column("consent_status", sa.String(16), nullable=False, server_default="granted"),
@@ -37,7 +37,7 @@ def upgrade() -> None:
     op.add_column("conversations", sa.Column("challenge_id", sa.String(64), nullable=True))
     op.add_column("conversations", sa.Column("original_message", sa.Text(), nullable=True))
 
-    # action_records: intent nonce + lifecycle state (TRD §16).
+    # action_records: intent nonce + lifecycle state.
     op.add_column(
         "action_records",
         sa.Column("intent_nonce", sa.Integer(), nullable=False, server_default="0"),
@@ -47,11 +47,11 @@ def upgrade() -> None:
         sa.Column("state", sa.String(16), nullable=False, server_default="result"),
     )
 
-    # audit_log: tokenized refs — NO raw PII (NFR-4).
+    # audit_log: tokenized refs — NO raw PII.
     op.add_column("audit_log", sa.Column("user_ref", sa.String(64), nullable=True))
     op.add_column("audit_log", sa.Column("args_hash", sa.String(64), nullable=True))
 
-    # Escalations — the human-handoff artifact (TRD §12.7).
+    # Escalations — the human-handoff artifact.
     op.create_table(
         "escalations",
         sa.Column("id", sa.String(length=32), primary_key=True),

@@ -36,13 +36,13 @@ class ActionAgent:
         run_id: str,
         message: str,
         pending_write: PendingWrite | None = None,
-    ) -> list[ActionRecord]:
+) -> list[ActionRecord]:
         records: list[ActionRecord] = []
         for intent in intents:
             if intent.type != IntentType.ACTION or not intent.action:
                 continue
             # A gated write only executes via its confirmed, conversation-anchored PendingWrite
-            # (TRD §12.5.1/§15) — never directly off a fresh intent.
+            # — never directly off a fresh intent.
             if intent.action in _STATE_CHANGING:
                 if pending_write is not None and pending_write.tool == intent.action:
                     records.append(await self._execute_pending(pending_write, user_id, message))
@@ -52,7 +52,7 @@ class ActionAgent:
 
     async def _execute_pending(
         self, pw: PendingWrite, user_id: str, message: str
-    ) -> ActionRecord:
+) -> ActionRecord:
         """Execute a confirmed write under its idempotent key (exactly-once on resume)."""
         idem: str = pw.idempotency_key
         call: Callable[[], Any]
@@ -75,7 +75,7 @@ class ActionAgent:
     async def _dispatch(self, action: str, entities: dict) -> ActionRecord:
         # Reads only: state-changing actions never reach here — they execute via
         # _execute_pending() under the conversation-anchored idempotency key (run() guard
-        # above; ADR-0004). Reads need no idempotency key.
+        # above). Reads need no idempotency key.
         idem = None
 
         # Resolve arguments / required-arg checks.
@@ -86,8 +86,8 @@ class ActionAgent:
                     tool=action,
                     needs_clarification=(
                         "You don't have any claims on file yet. Would you like to file one?"
-                    ),
-                )
+),
+)
             args = {"claim_id": claim_id}
             call = lambda: mb.get_claim_status(claim_id)  # noqa: E731
 
@@ -96,7 +96,7 @@ class ActionAgent:
             if not policy_id:
                 return ActionRecord(
                     tool=action, needs_clarification="Which policy ID should I look up?"
-                )
+)
             args = {"policy_id": policy_id}
             call = lambda: mb.get_policy_details(policy_id)  # noqa: E731
 
@@ -115,7 +115,7 @@ class ActionAgent:
                 idempotency_key=idem,
                 ok=True,
                 result=result.model_dump(),
-            )
+)
         except ToolError as e:
             log.info("action.tool_error", tool=action, error=str(e))
             return ActionRecord(tool=action, args=args, idempotency_key=idem, error=str(e))
@@ -123,4 +123,4 @@ class ActionAgent:
             log.warning("action.timeout", tool=action)
             return ActionRecord(
                 tool=action, args=args, idempotency_key=idem, error="tool timed out"
-            )
+)

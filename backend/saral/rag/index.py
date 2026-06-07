@@ -62,7 +62,7 @@ class HybridIndex:
         top_k = top_k or get_settings().retrieval_top_k
 
         # Dense ranking + per-passage cosine (the surfaced relevance score, used by the
-        # retrieval score-floor groundedness gate — ADR-0002/FR-18).
+        # retrieval score-floor groundedness gate .
         qv = self.embedder.embed_query(query)
         cos = {i: cosine(qv, self._vectors[i]) for i in range(len(self.passages))}
         dense = sorted(cos, key=lambda i: cos[i], reverse=True)
@@ -98,10 +98,10 @@ def search_knowledge(
     user_id: str | None = None,
     allowed_domains: list[str] | None = None,
 ) -> list[Passage]:
-    """Tool entrypoint (TRD §14): hybrid semantic + keyword retrieval with citations.
+    """Tool entrypoint: hybrid semantic + keyword retrieval with citations.
 
     Merges the GENERIC corpus (unscoped) with the customer's PER-CUSTOMER documents, the latter
-    hard-filtered by the verified `user_id` ∧ `allowed_domains` (FR-16). The per-customer index
+    hard-filtered by the verified `user_id` ∧ `allowed_domains`. The per-customer index
     is a no-op when no customer data is loaded, so the generic path is unaffected.
     """
     generic = get_index().search(query, top_k=top_k)

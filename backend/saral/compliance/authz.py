@@ -1,6 +1,6 @@
 """Deterministic authorization.
 
-Correctness matters more than flexibility here (TRD §11.3), so authorization is pure
+Correctness matters more than flexibility here, so authorization is pure
 logic, not LLM judgment. Rule: a user may act only on accounts/policies/claims they own.
 """
 

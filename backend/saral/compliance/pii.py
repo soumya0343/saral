@@ -1,11 +1,11 @@
-"""PII detection + redaction (the Redact gate, CONTEXT 'Redact gate').
+"""PII detection + redaction (the Redact gate).
 
 `PresidioRedactor` (NER-backed: catches names/locations) is the production redact gate, layered
 over the regex patterns so India-specific PII (Aadhaar/PAN/mobile) Presidio's default NER misses
 is still caught. It needs the `pii` extra; if that import fails, `get_redactor()` falls back to
 the dependency-free `RegexRedactor`. CI/eval default to regex (deterministic + reproducible).
 
-Redaction runs before storage and before any logged preview (FR-6, NFR-4).
+Redaction runs before storage and before any logged preview.
 """
 
 from __future__ import annotations
