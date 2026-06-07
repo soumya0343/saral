@@ -54,6 +54,7 @@ class RunState(BaseModel):
 
     language: Language | None = None
     language_hint: Language | None = None  # conversation's established language (sticky detection)
+    search_query: str = ""  # standalone, reference-resolved retrieval query (from triage)
     intents: list[Intent] = Field(default_factory=list)
     entities: dict[str, Any] = Field(default_factory=dict)
     allowed_domains: list[str] = Field(default_factory=list)  # intent→domain map output

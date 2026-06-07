@@ -218,7 +218,8 @@ def classify(text: str) -> IntentResult:
         intents=intents,
         entities=extract_entities(text),
         confidence=max((i.confidence for i in intents), default=0.0),
-)
+        search_query=text,  # deterministic: query == message (rag_node anchors meta follow-ups)
+    )
 
 
 def _stub_handler(messages: list[Message]) -> IntentResult:
@@ -242,6 +243,9 @@ _SYSTEM_PROMPT = (
     "Use an action ONLY when the customer directly asks you to perform it now "
     "(e.g. 'update my number to 98…', 'file a claim for my hospital bill', 'raise a complaint'). "
     "Use the conversation history to resolve short follow-ups like 'haan kar do' / 'ok do it'. "
+    "Also set `search_query`: a STANDALONE retrieval query for the user's request — resolve "
+    "references and follow-ups using the history (e.g. 'samajh nahi aaya' after a claim question "
+    "-> 'why was my claim rejected'); if the message is already self-contained, copy it as-is. "
     "Return all intents that apply for mixed requests."
 )
 
@@ -329,7 +333,7 @@ class TriageAgent:
                 "use 'unknown' if truly nothing applies."
             )
         msgs = [Message(role="system", content=system)]
-        for h in history[-4:]:  # recent turns so follow-ups ("ok do it") resolve in context
+        for h in history[-12:]:  # ample prior turns so follow-ups ("ok do it") resolve in context
             role = "assistant" if h.role == "assistant" else "user"
             msgs.append(Message(role=role, content=h.content))
         msgs.append(Message(role="user", content=message))
@@ -347,12 +351,16 @@ class TriageAgent:
         history: list[HistoryTurn] | None = None,
     ) -> tuple[IntentResult, bool]:
         history = history or []
-        # 1) Understand -> normalize. 2) Re-prompt once if undefined. 3) Deterministic floor.
-        result = await self._classify(message, history)
-        if _all_unknown(result.intents):
-            result = await self._classify(message, history, retry=True)
-        if _all_unknown(result.intents):
-            result = classify(message)
+        # Deterministic FIRST (fast, free, reproducible). Only when it can't classify do we
+        # spend an LLM call to UNDERSTAND the phrasing — this keeps scarce free-tier LLM budget
+        # for the grounded answer (synthesis), and re-prompts the LLM once if still undefined.
+        result = classify(message)
+        if _all_unknown(result.intents) and self._llm.has_real_provider:
+            llm_res = await self._classify(message, history)
+            if _all_unknown(llm_res.intents):
+                llm_res = await self._classify(message, history, retry=True)
+            if not _all_unknown(llm_res.intents):
+                result = llm_res
         # Deterministic safety guard: a capability/permission QUESTION must never become a write,
         # whatever the LLM said. Writes fire only on a direct request — keeps step-up honest.
         if _hits(message.lower(), {k.lower() for k in _CAPABILITY}):

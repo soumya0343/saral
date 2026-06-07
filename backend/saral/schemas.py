@@ -78,6 +78,8 @@ class IntentResult(BaseModel):
     intents: list[Intent] = Field(default_factory=list)
     entities: dict[str, Any] = Field(default_factory=dict)
     confidence: float = Field(default=0.0, ge=0.0, le=1.0)
+    # Standalone, reference-resolved retrieval query (follow-ups rewritten using history).
+    search_query: str = ""
 
     @property
     def is_mixed(self) -> bool:

@@ -16,8 +16,10 @@ import httpx
 from pydantic import BaseModel, ValidationError
 
 from saral.llm.base import LLMError, Message
+from saral.logging import get_logger
 
 T = TypeVar("T", bound=BaseModel)
+log = get_logger(__name__)
 
 
 def strip_fences(text: str) -> str:
@@ -42,7 +44,10 @@ class OpenAICompatProvider:
         timeout: float = 60.0,
     ) -> None:
         self._base_url = base_url.rstrip("/")
-        self._api_key = api_key
+        # Multiple comma-separated keys are rotated round-robin and on 429, to spread free-tier
+        # rate limits across keys before the chain falls through to the next provider.
+        self._keys = [k.strip() for k in (api_key or "").split(",") if k.strip()]
+        self._rr = 0  # round-robin start pointer
         self._model = model
         self._timeout = timeout
         self.last_total_tokens = 0  # usage from the most recent call (0 if not reported)
@@ -51,31 +56,39 @@ class OpenAICompatProvider:
 
     @property
     def available(self) -> bool:
-        return bool(self._api_key)
-
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._api_key}",
-            "Content-Type": "application/json",
-        }
+        return bool(self._keys)
 
     async def _chat(self, payload: dict) -> str:
         url = f"{self._base_url}/chat/completions"
-        try:
-            async with httpx.AsyncClient(timeout=self._timeout) as client:
-                resp = await client.post(url, headers=self._headers(), json=payload)
-                resp.raise_for_status()
-                data = resp.json()
-        except Exception as e:  # noqa: BLE001 — normalize to LLMError for fallback
-            raise LLMError(f"{self.name} request failed: {e}") from e
-        self.last_total_tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
-        try:
-            content = data["choices"][0]["message"].get("content")
-        except (KeyError, IndexError, TypeError) as e:
-            raise LLMError(f"{self.name} malformed response: {e}") from e
-        if not content:
-            raise LLMError(f"{self.name} returned empty content")
-        return content
+        n = len(self._keys)
+        last_err: Exception | None = None
+        for i in range(n):
+            key = self._keys[(self._rr + i) % n]
+            headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
+            try:
+                async with httpx.AsyncClient(timeout=self._timeout) as client:
+                    resp = await client.post(url, headers=headers, json=payload)
+                    resp.raise_for_status()
+                    data = resp.json()
+            except httpx.HTTPStatusError as e:
+                last_err = e
+                if e.response.status_code == 429 and n > 1:
+                    log.info("llm.key_rotate", provider=self.name, reason="429", key_index=i)
+                    continue  # this key is rate-limited; try the next one
+                raise LLMError(f"{self.name} request failed: {e}") from e
+            except Exception as e:  # noqa: BLE001 — normalize to LLMError for fallback
+                raise LLMError(f"{self.name} request failed: {e}") from e
+            # Success — advance the pointer so the NEXT call starts on a different key (spread).
+            self._rr = (self._rr + i + 1) % n
+            self.last_total_tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
+            try:
+                content = data["choices"][0]["message"].get("content")
+            except (KeyError, IndexError, TypeError) as e:
+                raise LLMError(f"{self.name} malformed response: {e}") from e
+            if not content:
+                raise LLMError(f"{self.name} returned empty content")
+            return content
+        raise LLMError(f"{self.name}: all {n} keys rate-limited (429)") from last_err
 
     @staticmethod
     def _to_openai(messages: list[Message]) -> list[dict]:

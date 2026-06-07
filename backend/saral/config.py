@@ -112,7 +112,7 @@ class Settings(BaseSettings):
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard
     tool_timeout_s: float = 10.0
-    conversation_memory_turns: int = 8
+    conversation_memory_turns: int = 40  # full-chat context window (bounded for token safety)
 
     # --- Reliability (Phase 5) ---
     llm_retry_cap: int = 2  # retries per provider on structured/parse error before fallback

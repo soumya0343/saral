@@ -203,7 +203,9 @@ _PHRASING_PROMPT = (
     "or outcomes. If a source is given, you may reference it. Answer directly; do not show "
     "your reasoning. If there are no useful facts, give a brief offer to help with policy, "
     "claims, billing or account questions — do NOT invent multi-step processes, forms, or ask "
-    "for document/policy numbers (the system collects what it needs on its own).\n\n"
+    "for document/policy numbers (the system collects what it needs on its own). "
+    "If the customer says they did not understand, re-explain your PREVIOUS answer (in the "
+    "conversation above) more simply — do NOT introduce a new or different reason.\n\n"
     "Facts:\n{facts}"
 )
 
@@ -256,10 +258,10 @@ class SynthesisAgent:
             style=_LANG_STYLE.get(ctx.language, _LANG_STYLE[Language.EN]),
             facts="\n".join(facts),
         )
-        # Recent turns give the model follow-up context ("ok do it", "what about that?").
+        # Full conversation so the model has complete context (not just the last few turns).
         turns = [
             Message(role="assistant" if h.role == "assistant" else "user", content=h.content)
-            for h in ctx.history[-6:]
+            for h in ctx.history
         ]
         messages = [
             Message(role="system", content=prompt),

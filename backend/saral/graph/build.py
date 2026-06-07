@@ -124,6 +124,7 @@ async def triage_node(state: RunState) -> dict:
         "language": result.language,
         "intents": result.intents,
         "entities": entities,
+        "search_query": result.search_query or state.raw_message,
         "step_count": 1,
     }
     # Sarvam language-detect failed -> deterministic fallback served; flag degraded.
@@ -300,11 +301,42 @@ async def supervisor_node(state: RunState) -> dict:
     return {"route": _route(state), "step_count": 1}
 
 
+# Meta / follow-up phrases that carry NO retrieval signal of their own — retrieve on the
+# prior question instead, so "samajh nahi aaya" doesn't pull unrelated passages.
+_META_FOLLOWUP = (
+    "samajh", "samjh", "nahi aaya", "nhi aaya", "understand", "didn't get", "did not understand",
+    "explain", "clarify", "matlab", "phir se", "dobara", "repeat", "elaborate", "samjhao",
+    "what do you mean", "i don't get", "confus", "समझ", "समझा", "मतलब", "फिर से", "दोबारा",
+)
+
+
+def _retrieval_query(state: RunState) -> str:
+    """Deterministic context query (fallback when no LLM-condensed query is available).
+
+    A self-contained question retrieves on its own words (prepending prior turns would dilute
+    a clean topic switch). A meta/short follow-up ("samajh nahi aaya", "and that?") anchors on
+    the most recent SUBSTANTIVE prior question so the topic carries over.
+    """
+    msg = state.raw_message
+    # Prefer the LLM-condensed, reference-resolved query when triage produced one.
+    if state.search_query and state.search_query.strip() and state.search_query != msg:
+        return state.search_query.strip()
+    lower = msg.lower()
+    is_meta = any(k in lower for k in _META_FOLLOWUP) or len(lower.split()) <= 3
+    if is_meta:
+        for h in reversed(state.history):
+            if h.role == "user":
+                prior = h.content
+                if len(prior.split()) > 3 and not any(k in prior.lower() for k in _META_FOLLOWUP):
+                    return f"{prior} {msg}"
+    return msg
+
+
 async def rag_node(state: RunState) -> dict:
     # Per-customer scoped retrieval: pass verified user_id + allowed domains.
     try:
         passages = await _rag.run(
-            state.raw_message,
+            _retrieval_query(state),
             user_id=state.user_id,
             allowed_domains=state.allowed_domains,
 )
