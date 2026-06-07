@@ -334,7 +334,12 @@ async def synthesis_node(state: RunState) -> dict:
         status = "degraded"
         response.resolution_status = "degraded"
 
-    update: dict = {"final_response": response, "status": status, "step_count": 1}
+    update: dict = {
+        "final_response": response,
+        "status": status,
+        "step_count": 1,
+        "tokens_used": _synth.last_tokens,
+    }
     # Escalation as a real artifact: emit a record on any escalated outcome.
     if status == "escalated" and state.escalation is None:
         primary = next((i.action or str(i.type) for i in state.intents), "unknown")

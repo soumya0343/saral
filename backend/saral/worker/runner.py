@@ -5,6 +5,8 @@ Kept separate from the consume loop so it can be unit-tested without Redis Strea
 
 from __future__ import annotations
 
+import time
+
 from saral.graph.build import build_checkpointed_graph
 from saral.graph.state import RunState
 from saral.logging import get_logger
@@ -49,11 +51,16 @@ async def execute_run(req: RunRequest) -> RunState:
     await publish_trace(ev("run_started", data={"message": req.message}))
 
     final_state = init
+    t_start = time.monotonic()
+    prev_ts = t_start
     try:
         async for chunk in graph.astream(graph_input, config, stream_mode="updates"):
             for node_name, update in chunk.items():
                 if update is None:
                     continue
+                now = time.monotonic()
+                elapsed_ms = int((now - prev_ts) * 1000)  # this node's wall-clock
+                prev_ts = now
                 await publish_trace(ev("agent_started", agent=node_name))
                 final_state = final_state.model_copy(update=update)
 
@@ -112,7 +119,13 @@ async def execute_run(req: RunRequest) -> RunState:
                             data=update["final_response"].model_dump(),
                         )
                     )
-                await publish_trace(ev("agent_finished", agent=node_name))
+                await publish_trace(
+                    ev(
+                        "agent_finished",
+                        agent=node_name,
+                        data={"elapsed_ms": elapsed_ms, "tokens": int(update.get("tokens_used") or 0)},
+                    )
+                )
 
         # Authoritative final state from the checkpoint (correct even after a resume).
         snap = await graph.aget_state(config)
@@ -129,6 +142,8 @@ async def execute_run(req: RunRequest) -> RunState:
                     "route": final_state.route,
                     "response": response.model_dump() if response else None,
                     "citations": [p.citation for p in final_state.retrieved],
+                    "elapsed_ms": int((time.monotonic() - t_start) * 1000),
+                    "tokens": int(final_state.tokens_used or 0),
                 },
             )
         )

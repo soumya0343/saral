@@ -82,6 +82,8 @@ class RunState(BaseModel):
     status: RunStatus = "in_progress"
     # Additive reducer so parallel branches (rag + action) can both increment in one step.
     step_count: Annotated[int, operator.add] = 0
+    # LLM tokens consumed this run (synthesis phrasing); additive across nodes.
+    tokens_used: Annotated[int, operator.add] = 0
 
     @property
     def is_blocked(self) -> bool:

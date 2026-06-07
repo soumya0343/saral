@@ -45,6 +45,7 @@ class OpenAICompatProvider:
         self._api_key = api_key
         self._model = model
         self._timeout = timeout
+        self.last_total_tokens = 0  # usage from the most recent call (0 if not reported)
         if name:
             self.name = name
 
@@ -67,6 +68,7 @@ class OpenAICompatProvider:
                 data = resp.json()
         except Exception as e:  # noqa: BLE001 — normalize to LLMError for fallback
             raise LLMError(f"{self.name} request failed: {e}") from e
+        self.last_total_tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
         try:
             content = data["choices"][0]["message"].get("content")
         except (KeyError, IndexError, TypeError) as e:

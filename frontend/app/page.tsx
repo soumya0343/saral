@@ -1,6 +1,6 @@
 "use client";
 
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
 
@@ -42,28 +42,91 @@ const AGENT_COLORS: Record<string, string> = {
   synthesis: "bg-indigo-100 text-indigo-800 dark:bg-indigo-950 dark:text-indigo-300",
 };
 
-function TraceLine({ e }: { e: TraceEvent }) {
-  if (["agent_started", "agent_finished", "run_started", "run_finished"].includes(e.type))
-    return null;
-  const color = e.agent ? AGENT_COLORS[e.agent] ?? "bg-neutral-100" : "bg-neutral-100";
-  let detail = "";
+function eventDetail(e: TraceEvent): string {
   if (e.type === "intent") {
     const intents = (e.data.intents as { type: string; action: string | null }[]) ?? [];
-    detail = `${e.data.language} · ${intents.map((i) => i.action ?? i.type).join(", ")}`;
-  } else if (e.type === "route") detail = `→ ${e.data.route}`;
-  else if (e.type === "retrieval") detail = ((e.data.citations as string[]) ?? []).join(", ");
-  else if (e.type === "compliance") {
-    const ds = (e.data.decisions as { decision: string; actor: string }[]) ?? [];
-    detail = ds.map((d) => `${d.actor}:${d.decision}`).join(", ");
-  } else if (e.type === "action") {
-    const as = (e.data.actions as { tool: string; ok: boolean }[]) ?? [];
-    detail = as.map((a) => `${a.tool}${a.ok ? "✓" : "✗"}`).join(", ");
+    return `${e.data.language} · ${intents.map((i) => i.action ?? i.type).join(", ")}`;
   }
+  if (e.type === "route") return `→ ${e.data.route}`;
+  if (e.type === "retrieval") return ((e.data.citations as string[]) ?? []).join(", ");
+  if (e.type === "compliance") {
+    const ds = (e.data.decisions as { decision: string; actor: string }[]) ?? [];
+    return ds.map((d) => `${d.actor}:${d.decision}`).join(", ");
+  }
+  if (e.type === "action") {
+    const as = (e.data.actions as { tool: string; ok: boolean }[]) ?? [];
+    return as.map((a) => `${a.tool}${a.ok ? "✓" : "✗"}`).join(", ");
+  }
+  return "";
+}
+
+type NodeRow = { agent: string; detail: string; ms?: number; tokens?: number };
+
+// Fold the raw event stream into one row per agent node, with timing + tokens.
+function buildNodeRows(trace: TraceEvent[]): { rows: NodeRow[]; totalMs?: number; totalTok?: number } {
+  const order: string[] = [];
+  const byNode: Record<string, NodeRow> = {};
+  let totalMs: number | undefined;
+  let totalTok: number | undefined;
+  for (const e of trace) {
+    if (e.type === "final") {
+      totalMs = e.data.elapsed_ms as number | undefined;
+      totalTok = e.data.tokens as number | undefined;
+      continue;
+    }
+    if (!e.agent) continue;
+    if (!byNode[e.agent]) {
+      byNode[e.agent] = { agent: e.agent, detail: "" };
+      order.push(e.agent);
+    }
+    const row = byNode[e.agent];
+    const d = eventDetail(e);
+    if (d) row.detail = d;
+    if (e.type === "agent_finished") {
+      if (typeof e.data.elapsed_ms === "number") row.ms = e.data.elapsed_ms as number;
+      if (typeof e.data.tokens === "number" && (e.data.tokens as number) > 0)
+        row.tokens = e.data.tokens as number;
+    }
+  }
+  return { rows: order.map((a) => byNode[a]), totalMs, totalTok };
+}
+
+function AgentTrace({ trace }: { trace: TraceEvent[] }) {
+  const { rows, totalMs, totalTok } = buildNodeRows(trace);
+  if (rows.length === 0) return null;
   return (
-    <div className="flex items-center gap-2 py-0.5 text-xs">
-      <span className={`rounded px-1.5 py-0.5 font-mono ${color}`}>{e.agent ?? e.type}</span>
-      <span className="text-neutral-500">{e.type}</span>
-      {detail && <span className="font-mono text-neutral-700 dark:text-neutral-300">{detail}</span>}
+    <div className="mb-3 rounded-lg bg-neutral-50 p-2 dark:bg-neutral-900">
+      <div className="mb-1 flex items-center justify-between text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+        <span>Agent trace</span>
+        {(totalMs != null || totalTok != null) && (
+          <span className="normal-case">
+            {totalMs != null && `${totalMs} ms`}
+            {totalTok != null && totalTok > 0 && ` · ${totalTok} tok`}
+          </span>
+        )}
+      </div>
+      <div className="flex flex-col gap-0.5">
+        {rows.map((r, i) => (
+          <div key={i} className="flex items-center gap-2 text-xs">
+            <span
+              className={`w-24 shrink-0 rounded px-1.5 py-0.5 text-center font-mono ${
+                AGENT_COLORS[r.agent] ?? "bg-neutral-200 text-neutral-700 dark:bg-neutral-700 dark:text-neutral-200"
+              }`}
+            >
+              {r.agent}
+            </span>
+            <span className="flex-1 truncate font-mono text-neutral-700 dark:text-neutral-300">
+              {r.detail}
+            </span>
+            <span className="shrink-0 tabular-nums text-neutral-400">
+              {r.ms != null ? `${r.ms} ms` : ""}
+            </span>
+            <span className="w-16 shrink-0 text-right tabular-nums text-neutral-400">
+              {r.tokens != null ? `${r.tokens} tok` : ""}
+            </span>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -234,6 +297,19 @@ export default function App() {
   const [input, setInput] = useState("");
   const [turns, setTurns] = useState<ChatTurn[]>([]);
   const [busy, setBusy] = useState(false);
+  // Developer mode: the step-by-step agent trace + technical metadata are for developers,
+  // not customers. Off by default; persisted across reloads.
+  const [devMode, setDevMode] = useState(false);
+  useEffect(() => {
+    setDevMode(localStorage.getItem("saral_dev_mode") === "1");
+  }, []);
+  function toggleDev() {
+    setDevMode((v) => {
+      const next = !v;
+      localStorage.setItem("saral_dev_mode", next ? "1" : "0");
+      return next;
+    });
+  }
   const convoRef = useRef<string | null>(null);
 
   function start(c: Customer) {
@@ -329,9 +405,27 @@ export default function App() {
           </p>
         </div>
         <div className="flex items-center gap-3 text-sm text-neutral-500">
-          <a href="/eval" className="underline">
-            Eval dashboard
-          </a>
+          <button
+            onClick={toggleDev}
+            title="Show the step-by-step agent trace, timing and tokens (hidden from customers)"
+            className={`flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs transition ${
+              devMode
+                ? "border-indigo-400 bg-indigo-50 text-indigo-700 dark:border-indigo-600 dark:bg-indigo-950 dark:text-indigo-300"
+                : "border-neutral-300 dark:border-neutral-700"
+            }`}
+          >
+            <span
+              className={`inline-block h-2 w-2 rounded-full ${
+                devMode ? "bg-indigo-500" : "bg-neutral-400"
+              }`}
+            />
+            Developer mode
+          </button>
+          {devMode && (
+            <a href="/eval" className="underline">
+              Eval dashboard
+            </a>
+          )}
           <button
             onClick={() => {
               setCustomer(null);
@@ -367,15 +461,8 @@ export default function App() {
               </div>
             ) : (
               <div className="rounded-2xl border border-neutral-200 p-4 dark:border-neutral-800">
-                {turn.trace && turn.trace.length > 0 && (
-                  <div className="mb-3 rounded-lg bg-neutral-50 p-2 dark:bg-neutral-900">
-                    <div className="mb-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
-                      Agent trace
-                    </div>
-                    {turn.trace.map((e, j) => (
-                      <TraceLine key={j} e={e} />
-                    ))}
-                  </div>
+                {devMode && turn.trace && turn.trace.length > 0 && (
+                  <AgentTrace trace={turn.trace} />
                 )}
                 {turn.text ? (
                   <>
@@ -383,8 +470,8 @@ export default function App() {
                     {turn.status && (
                       <div className="mt-2 flex flex-wrap gap-3 text-xs text-neutral-500">
                         <span className={statusColor(turn.status)}>● {turn.status}</span>
-                        {turn.route && <span>route: {turn.route}</span>}
-                        {turn.language && <span>lang: {turn.language}</span>}
+                        {devMode && turn.route && <span>route: {turn.route}</span>}
+                        {devMode && turn.language && <span>lang: {turn.language}</span>}
                         {turn.actions && turn.actions.length > 0 && (
                           <span>actions: {turn.actions.join(", ")}</span>
                         )}

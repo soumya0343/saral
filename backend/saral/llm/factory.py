@@ -40,6 +40,7 @@ class FallbackLLM:
 
     def __init__(self, providers: list[LLMClient]) -> None:
         self.providers = providers
+        self.last_tokens = 0  # total tokens from the most recent successful call
 
     @property
     def name(self) -> str:
@@ -72,7 +73,9 @@ class FallbackLLM:
             # re-prompt) before falling through to the next provider.
             for attempt in range(retries + 1):
                 try:
-                    return await getattr(provider, method)(*args, **kwargs)
+                    result = await getattr(provider, method)(*args, **kwargs)
+                    self.last_tokens = getattr(provider, "last_total_tokens", 0)
+                    return result
                 except LLMError as e:
                     last_err = e
                     log.warning(

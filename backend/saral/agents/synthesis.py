@@ -197,8 +197,10 @@ class SynthesisAgent:
 
     def __init__(self) -> None:
         self._llm = get_llm("synthesis") # Hindi-strong Gemini Flash first
+        self.last_tokens = 0  # tokens used by the phrasing call (0 if deterministic)
 
     async def run(self, ctx: SynthesisContext) -> ResponsePayload:
+        self.last_tokens = 0
         # Deterministic structure (status / citations / actions) — never delegated.
         payload = compose(ctx)
         # Real-LLM phrasing of the customer-facing message when a model is available, and
@@ -211,6 +213,7 @@ class SynthesisAgent:
             with contextlib.suppress(LLMError):
                 facts = self._facts(ctx, payload)
                 phrased = await self._phrase(ctx, facts)
+                self.last_tokens = self._llm.last_tokens
                 # Grounding gate: only accept LLM phrasing whose facts trace to the sources;
                 # otherwise keep the deterministic grounded draft.
                 if phrased and _grounded(phrased, "\n".join(facts) + " " + payload.message):
