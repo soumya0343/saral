@@ -81,6 +81,51 @@ class MessageOut(BaseModel):
     sequence_num: int
 
 
+class ConversationSummary(BaseModel):
+    id: str
+    status: str
+    suspend_status: str | None = None
+    preview: str  # first user message, for the sidebar list
+    updated_at: str
+
+
+@router.get(
+    "/users/{user_id}/conversations",
+    response_model=list[ConversationSummary],
+    tags=["conversations"],
+)
+async def list_conversations(
+    user_id: str, db: AsyncSession = Depends(get_session)
+) -> list[ConversationSummary]:
+    """Past conversations for a customer (most-recent first) — powers the sidebar history."""
+    convos = (
+        await db.scalars(
+            select(Conversation)
+            .where(Conversation.user_id == user_id)
+            .order_by(Conversation.updated_at.desc())
+            .limit(50)
+        )
+    ).all()
+    out: list[ConversationSummary] = []
+    for c in convos:
+        first = await db.scalar(
+            select(Message.content)
+            .where(Message.conversation_id == c.id, Message.role == "user")
+            .order_by(Message.sequence_num)
+            .limit(1)
+        )
+        out.append(
+            ConversationSummary(
+                id=c.id,
+                status=c.status,
+                suspend_status=c.suspend_status,
+                preview=(first or "New conversation")[:60],
+                updated_at=c.updated_at.isoformat() if c.updated_at else "",
+            )
+        )
+    return out
+
+
 @router.post("/conversations", response_model=ConversationOut, tags=["conversations"])
 async def start_conversation(
     body: StartConversation, db: AsyncSession = Depends(get_session)

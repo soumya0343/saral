@@ -72,6 +72,8 @@ class RunState(BaseModel):
     intent_nonce: int = 0  # server-incremented; never from the message body
     step_up_owed: bool = False
     challenge_id: str | None = None  # surfaced to the customer when step-up is requested
+    # Simulated OTP delivery (no SMS): surfaced as a popup event, never written to a message.
+    challenge_otp: str | None = None
     # Resume inputs (set on a confirmation/clarification reply; see /conversations/{id}/reply):
     resume_reply: str | None = None
     challenge_response: str | None = None

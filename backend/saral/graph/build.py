@@ -247,10 +247,8 @@ async def identity_node(state: RunState) -> dict:
             }
         chal = request_step_up(state.user_id)
         action_name = _t(_ACTION_NAME.get(pending.tool, {}), lang) or pending.tool.replace("_", " ")
-        prompt = _t(_STEPUP_PROMPT, lang).format(action=action_name)
-        if chal.get("test_otp"):
-            prompt += f" (test code: {chal['test_otp']})"
-        prompt += _t(_OTP_SUFFIX, lang)
+        # The OTP is delivered out-of-band (simulated SMS popup), not written into the message.
+        prompt = _t(_STEPUP_PROMPT, lang).format(action=action_name) + _t(_OTP_SUFFIX, lang)
         return _suspend(
             "awaiting_input",
             prompt,
@@ -258,7 +256,8 @@ async def identity_node(state: RunState) -> dict:
             intent_nonce=nonce,
             step_up_owed=True,
             challenge_id=chal["challenge_id"],
-)
+            challenge_otp=chal.get("test_otp"),
+        )
 
     # auth_level == step_up. Confirmed? → execute; else read back for confirmation.
     if parse_confirmation(state.resume_reply or "") == "yes":
@@ -371,7 +370,8 @@ async def synthesis_node(state: RunState) -> dict:
         actions=state.actions,
         decisions=state.compliance_decisions,
         degraded=state.degraded_agents,
-)
+        history=state.history,
+    )
     response = await _synth.run(ctx)
     response.message = redact_pii(response.message) # pre-send gate
     status = _STATUS_FROM_RESOLUTION.get(response.resolution_status, "resolved")

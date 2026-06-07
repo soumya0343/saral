@@ -25,6 +25,14 @@ type Customer = {
   claim_id?: string;
 };
 
+type ConvSummary = {
+  id: string;
+  status: string;
+  suspend_status: string | null;
+  preview: string;
+  updated_at: string;
+};
+
 const SAMPLES = [
   "What does my health policy cover?",
   "मेरे क्लेम का स्टेटस क्या है",
@@ -310,16 +318,57 @@ export default function App() {
       return next;
     });
   }
+  // Simulated OTP delivery (no SMS gateway in the demo) — shown as a popup, not chat text.
+  const [otp, setOtp] = useState<string | null>(null);
+  const [convos, setConvos] = useState<ConvSummary[]>([]);
   const convoRef = useRef<string | null>(null);
+  // When the conversation is awaiting an OTP/confirmation, the next message must RESUME the
+  // suspended run (/reply), not start a fresh one (/messages) — otherwise context is lost.
+  const suspendedRef = useRef(false);
+
+  async function refreshConvos(uid: string) {
+    try {
+      const r = await fetch(`${API_URL}/users/${uid}/conversations`);
+      if (r.ok) setConvos(await r.json());
+    } catch {
+      /* ignore */
+    }
+  }
 
   function start(c: Customer) {
     setCustomer(c);
+    convoRef.current = null;
+    suspendedRef.current = false;
     const intro = c.returning
       ? `Welcome back, ${c.name}. How can I help with your policy or account?`
       : `Hi ${c.name}, you're verified. I've set up your account` +
         (c.policy_id ? ` (policy ${c.policy_id}, claim ${c.claim_id})` : "") +
         `. How can I help?`;
     setTurns([{ role: "assistant", text: intro, status: "resolved" }]);
+    refreshConvos(c.user_id);
+  }
+
+  function newChat() {
+    convoRef.current = null;
+    suspendedRef.current = false;
+    setTurns([
+      { role: "assistant", text: "How can I help with your policy or account?", status: "resolved" },
+    ]);
+  }
+
+  async function loadConversation(s: ConvSummary) {
+    convoRef.current = s.id;
+    suspendedRef.current = !!s.suspend_status;
+    setOtp(null);
+    try {
+      const r = await fetch(`${API_URL}/conversations/${s.id}`);
+      const msgs: { role: string; content: string }[] = r.ok ? await r.json() : [];
+      setTurns(
+        msgs.map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.content })),
+      );
+    } catch {
+      setTurns([]);
+    }
   }
 
   async function ensureConversation(): Promise<string> {
@@ -336,6 +385,7 @@ export default function App() {
   async function send(text: string) {
     if (!text.trim() || busy) return;
     setBusy(true);
+    const resuming = suspendedRef.current; // OTP / yes-no reply to a suspended run
     setTurns((t) => [...t, { role: "user", text }, { role: "assistant", text: "", trace: [] }]);
     setInput("");
     try {
@@ -348,6 +398,10 @@ export default function App() {
       const done = new Promise<void>((resolve) => {
         es.onmessage = (ev) => {
           const e: TraceEvent & { type: string } = JSON.parse(ev.data);
+          if (e.type === "otp") {
+            setOtp(String(e.data.code ?? ""));
+            return; // OTP is delivered via the popup, not added to the chat trace/text
+          }
           setTurns((t) => {
             const copy = [...t];
             const a = { ...copy[copy.length - 1] };
@@ -360,6 +414,9 @@ export default function App() {
               a.language = e.data.language as string;
               a.citations = (resp.citations as string[]) ?? [];
               a.actions = (resp.actions_taken as string[]) ?? [];
+              // Track suspension so the NEXT message resumes the run instead of starting fresh.
+              suspendedRef.current =
+                a.status === "awaiting_input" || a.status === "awaiting_confirmation";
             }
             copy[copy.length - 1] = a;
             return copy;
@@ -374,12 +431,15 @@ export default function App() {
           resolve();
         };
       });
-      await fetch(`${API_URL}/conversations/${cid}/messages`, {
+      // Resume a suspended run via /reply; otherwise start a new run via /messages.
+      const endpoint = resuming ? "reply" : "messages";
+      await fetch(`${API_URL}/conversations/${cid}/${endpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: text }),
       });
       await done;
+      refreshConvos(customer!.user_id);
     } finally {
       setBusy(false);
     }
@@ -395,7 +455,40 @@ export default function App() {
         : "text-neutral-500";
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-3xl flex-col gap-4 p-6">
+    <div className="mx-auto flex min-h-screen max-w-5xl">
+      {/* Sidebar: this customer's past conversations */}
+      <aside className="hidden w-60 shrink-0 flex-col gap-2 border-r border-neutral-200 p-3 md:flex dark:border-neutral-800">
+        <button
+          onClick={newChat}
+          className="rounded-lg border border-neutral-300 px-3 py-2 text-sm font-medium hover:bg-neutral-100 dark:border-neutral-700 dark:hover:bg-neutral-900"
+        >
+          + New chat
+        </button>
+        <div className="mt-1 px-1 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+          History
+        </div>
+        <div className="flex flex-1 flex-col gap-1 overflow-y-auto">
+          {convos.length === 0 && (
+            <p className="px-1 text-xs text-neutral-400">No past conversations yet.</p>
+          )}
+          {convos.map((c) => (
+            <button
+              key={c.id}
+              onClick={() => loadConversation(c)}
+              className={`flex flex-col rounded-lg px-2 py-1.5 text-left text-xs transition hover:bg-neutral-100 dark:hover:bg-neutral-900 ${
+                convoRef.current === c.id ? "bg-neutral-100 dark:bg-neutral-900" : ""
+              }`}
+            >
+              <span className="truncate">{c.preview}</span>
+              <span className="flex items-center gap-1 text-[10px] text-neutral-400">
+                {c.suspend_status ? "● awaiting reply" : c.status}
+              </span>
+            </button>
+          ))}
+        </div>
+      </aside>
+
+      <main className="flex min-h-screen flex-1 flex-col gap-4 p-6">
       <header className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">सरल · Saral</h1>
@@ -511,6 +604,52 @@ export default function App() {
           {busy ? "…" : "Send"}
         </button>
       </form>
-    </main>
+
+      </main>
+
+      {otp && (
+        <OtpToast
+          code={otp}
+          onUse={() => {
+            setInput(otp);
+            setOtp(null);
+          }}
+          onClose={() => setOtp(null)}
+        />
+      )}
+    </div>
+  );
+}
+
+// Simulated SMS notification — stands in for the host app's OTP delivery (no real SMS gateway).
+function OtpToast({ code, onUse, onClose }: { code: string; onUse: () => void; onClose: () => void }) {
+  return (
+    <div className="fixed left-1/2 top-6 z-50 w-80 -translate-x-1/2 rounded-2xl border border-neutral-200 bg-white p-4 shadow-2xl dark:border-neutral-700 dark:bg-neutral-900">
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          <span className="flex h-7 w-7 items-center justify-center rounded-full bg-emerald-100 text-emerald-700 dark:bg-emerald-950 dark:text-emerald-300">
+            💬
+          </span>
+          <div className="text-xs leading-tight">
+            <div className="font-medium">Saral Finserv</div>
+            <div className="text-neutral-400">SMS · just now</div>
+          </div>
+        </div>
+        <button onClick={onClose} className="text-neutral-400 hover:text-neutral-600" aria-label="Dismiss">
+          ✕
+        </button>
+      </div>
+      <p className="mt-2 text-sm text-neutral-600 dark:text-neutral-300">
+        Your one-time verification code is
+      </p>
+      <div className="mt-1 text-2xl font-semibold tracking-[0.3em] tabular-nums">{code}</div>
+      <p className="mt-1 text-[10px] text-neutral-400">Simulated delivery — no real SMS is sent.</p>
+      <button
+        onClick={onUse}
+        className="mt-3 w-full rounded-lg bg-indigo-600 px-3 py-1.5 text-sm font-medium text-white hover:bg-indigo-700"
+      >
+        Use code
+      </button>
+    </div>
   );
 }

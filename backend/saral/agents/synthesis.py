@@ -20,6 +20,7 @@ from saral.llm.stub import register_structured_handler
 from saral.schemas import (
     ActionRecord,
     ComplianceDecision,
+    HistoryTurn,
     Language,
     Passage,
     ResponsePayload,
@@ -35,6 +36,7 @@ class SynthesisContext(BaseModel):
     actions: list[ActionRecord] = Field(default_factory=list)
     decisions: list[ComplianceDecision] = Field(default_factory=list)
     degraded: list[str] = Field(default_factory=list)
+    history: list[HistoryTurn] = Field(default_factory=list)  # recent turns for follow-up context
 
 
 # --- Language-specific templates (stub composer) ---
@@ -182,11 +184,22 @@ _SYSTEM_PROMPT = (
 )
 
 
-_LANG_NAME = {Language.EN: "English", Language.HI: "Hindi", Language.HINGLISH: "Hinglish"}
+# Explicit SCRIPT rules — the facts may be in Devanagari (Hindi docs); the reply must stay in
+# ONE script for the customer's language, transliterating source terms as needed.
+_LANG_STYLE = {
+    Language.EN: "Write the entire reply in English.",
+    Language.HI: "पूरा उत्तर हिन्दी में, केवल देवनागरी लिपि में लिखें। रोमन अक्षरों का प्रयोग न करें।",
+    Language.HINGLISH: (
+        "Write the entire reply in Hinglish — Hindi using ONLY the Latin/Roman script. "
+        "Do NOT use any Devanagari characters; transliterate every Hindi word into Roman "
+        "letters (e.g. 'पॉलिसी' -> 'policy', 'बीमित राशि' -> 'bimit rashi'). Keep numbers and "
+        "currency as digits (₹50,00,000)."
+    ),
+}
 
 _PHRASING_PROMPT = (
     "You are a customer-support agent for an insurer. Write a SHORT, warm reply (1-3 "
-    "sentences) in {lang}. Use ONLY the facts below — do not invent policy details, numbers, "
+    "sentences). {style} Use ONLY the facts below — do not invent policy details, numbers, "
     "or outcomes. If a source is given, you may reference it. Answer directly; do not show "
     "your reasoning.\n\nFacts:\n{facts}"
 )
@@ -237,10 +250,17 @@ class SynthesisAgent:
 
     async def _phrase(self, ctx: SynthesisContext, facts: list[str]) -> str:
         prompt = _PHRASING_PROMPT.format(
-            lang=_LANG_NAME.get(ctx.language, "English"), facts="\n".join(facts)
+            style=_LANG_STYLE.get(ctx.language, _LANG_STYLE[Language.EN]),
+            facts="\n".join(facts),
         )
+        # Recent turns give the model follow-up context ("ok do it", "what about that?").
+        turns = [
+            Message(role="assistant" if h.role == "assistant" else "user", content=h.content)
+            for h in ctx.history[-6:]
+        ]
         messages = [
             Message(role="system", content=prompt),
+            *turns,
             Message(role="user", content=ctx.message),
         ]
         text = await self._llm.complete(messages, max_tokens=1500)

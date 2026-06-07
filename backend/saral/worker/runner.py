@@ -51,6 +51,7 @@ async def execute_run(req: RunRequest) -> RunState:
     await publish_trace(ev("run_started", data={"message": req.message}))
 
     final_state = init
+    pending_otp: str | None = None
     t_start = time.monotonic()
     prev_ts = t_start
     try:
@@ -63,6 +64,9 @@ async def execute_run(req: RunRequest) -> RunState:
                 prev_ts = now
                 await publish_trace(ev("agent_started", agent=node_name))
                 final_state = final_state.model_copy(update=update)
+                # Capture a simulated OTP; emitted AFTER the reply so the message shows first.
+                if update.get("challenge_otp"):
+                    pending_otp = update["challenge_otp"]
 
                 if "intents" in update:
                     await publish_trace(
@@ -150,6 +154,11 @@ async def execute_run(req: RunRequest) -> RunState:
                 },
             )
         )
+        # Simulated OTP "SMS" arrives AFTER the assistant's "I've sent a code" reply.
+        if pending_otp:
+            await publish_trace(
+                ev("otp", agent="identity", data={"code": pending_otp, "channel": "sms"})
+            )
         await _persist(final_state)
     except TimeoutError as e:
         log.error("run.timeout", run_id=req.run_id, error=str(e))

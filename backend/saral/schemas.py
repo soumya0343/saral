@@ -228,6 +228,7 @@ TraceEventType = Literal[
     "compliance",
     "action",
     "synthesis",
+    "otp",  # simulated OTP delivery (no SMS channel) — surfaced as a popup, not chat text
     "final",
     "error",
     "run_finished",
