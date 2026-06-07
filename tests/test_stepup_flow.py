@@ -32,8 +32,9 @@ async def test_full_stepup_confirm_execute_no_double_write():
     assert t1.pending_write and t1.pending_write.tool == "update_contact"
     assert t1.pending_write.value == "9000000000"
     pw: PendingWrite = t1.pending_write
-    # The OTP is surfaced in the prompt in non-prod (no SMS channel).
-    otp = t1.final_response.message.split("test code: ")[1].split(")")[0]
+    # The OTP is delivered out-of-band (simulated SMS) on the state, not in the message text.
+    otp = t1.challenge_otp
+    assert otp and "test code" not in t1.final_response.message
 
     # The customer echoes the OTP — verify_step_up raises auth level (API mints step_up token).
     assert verify_step_up(t1.challenge_id, otp, "U1001")

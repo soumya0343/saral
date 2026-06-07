@@ -116,7 +116,9 @@ _STATUS_FROM_RESOLUTION = {
 
 
 async def triage_node(state: RunState) -> dict:
-    result, degraded = await _triage.run(state.raw_message)
+    result, degraded = await _triage.run(
+        state.raw_message, hint=state.language_hint, history=state.history
+    )
     entities = {**state.known_entities, **result.entities}
     out: dict = {
         "language": result.language,

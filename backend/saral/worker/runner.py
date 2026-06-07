@@ -11,7 +11,7 @@ from saral.graph.build import build_checkpointed_graph
 from saral.graph.state import RunState
 from saral.logging import get_logger
 from saral.runbus import publish_trace
-from saral.schemas import RunRequest, TraceEvent
+from saral.schemas import Language, RunRequest, TraceEvent
 
 log = get_logger(__name__)
 
@@ -32,6 +32,7 @@ async def execute_run(req: RunRequest) -> RunState:
         intent_nonce=req.intent_nonce,
         resume_reply=req.resume_reply,
         challenge_response=req.challenge_response,
+        language_hint=Language(req.prev_language) if req.prev_language else None,
     )
     # Resume from a checkpoint if this run was interrupted mid-flight (worker crash).
     snapshot = await graph.aget_state(config)

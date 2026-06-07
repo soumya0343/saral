@@ -259,6 +259,7 @@ class RunRequest(BaseModel):
     auth_level: AuthLevel = AuthLevel.SESSION  # derived from the validated session token
     message: str
     history: list[HistoryTurn] = Field(default_factory=list)  # short-term memory (last N turns)
+    prev_language: str | None = None  # conversation's established language (sticky detection)
     # Customer's own ids (policy_id/claim_id) so "my claim status" resolves without an ID.
     known_entities: dict[str, Any] = Field(default_factory=dict)
     # Resume of a suspended run: the customer's reply to a confirmation / clarification.

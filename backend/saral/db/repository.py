@@ -143,6 +143,9 @@ async def persist_run(state: RunState) -> None:
                 convo.challenge_id = None
                 convo.original_message = None
             convo.status = state.status
+            # Remember the conversation's language so short follow-ups stay in it (sticky).
+            if state.language:
+                convo.language = str(state.language)
 
         # Escalation as a durable artifact.
         if state.escalation is not None:

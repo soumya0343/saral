@@ -53,6 +53,7 @@ class RunState(BaseModel):
     known_entities: dict[str, Any] = Field(default_factory=dict)
 
     language: Language | None = None
+    language_hint: Language | None = None  # conversation's established language (sticky detection)
     intents: list[Intent] = Field(default_factory=list)
     entities: dict[str, Any] = Field(default_factory=dict)
     allowed_domains: list[str] = Field(default_factory=list)  # intent→domain map output

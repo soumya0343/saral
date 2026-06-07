@@ -14,10 +14,21 @@ import re
 
 from saral.config import get_settings
 from saral.llm.base import LLMError, Message
+from saral.llm.factory import get_llm
 from saral.llm.sarvam import SarvamProvider
 from saral.llm.stub import register_structured_handler
 from saral.logging import get_logger
-from saral.schemas import Intent, IntentResult, IntentType, Language
+from saral.schemas import HistoryTurn, Intent, IntentResult, IntentType, Language
+
+# The closed set of actions the LLM may map an intent to — anything else is normalized away,
+# so the LLM can UNDERSTAND free phrasing but can never invent a tool or widen scope.
+_ALLOWED_ACTIONS = {
+    "get_claim_status",
+    "get_policy_details",
+    "update_contact",
+    "raise_ticket",
+    "file_claim",
+}
 
 log = get_logger(__name__)
 
@@ -43,7 +54,13 @@ _UPDATE_CONTACT = {
     "update number", "change number", "update mobile", "change mobile",
     "update contact", "update my number", "mobile number update", "नंबर अपडेट",
     "नंबर बदल", "update email", "change email", "update address",
-    "number update", "nambar", "नंबर",
+    "number update", "nambar",
+    # word-order + Hinglish variants ("phone number change karna hai", "number badalna")
+    "number change", "mobile change", "phone change", "phone number change",
+    "number badal", "number badalna", "mobile badal", "mobile badalna",
+    "naya number", "new number", "change my number", "change my mobile",
+    "phone number update", "contact update", "email change", "email update",
+    "नंबर बदलना", "नंबर चेंज", "मोबाइल बदल", "मोबाइल अपडेट", "ईमेल बदल",
 }
 _RAISE_TICKET = {
     "raise ticket", "raise a ticket", "file complaint", "register complaint",
@@ -96,9 +113,13 @@ _MOBILE_RE = re.compile(r"\b(?:\+?91[-\s]?)?([6-9]\d{9})\b")
 _EMAIL_RE = re.compile(r"\b([\w.+-]+@[\w-]+\.[\w.-]+)\b")
 
 # Action: "update/change ... (mobile|number|email|contact|address)".
+# Match an update verb and a contact field in EITHER order ("change my number" /
+# "phone number change karna hai"). Verbs include Hinglish badal/badalna and Devanagari.
+_UPD_VERB = r"update|change|badal|badalna|badl|naya|new|अपडेट|बदल|बदलना|चेंज"
+_UPD_FIELD = r"mobile|number|phone|email|contact|address|नंबर|मोबाइल|ईमेल|फोन"
 _UPDATE_RE = re.compile(
-    r"\b(update|change|badl|badal|अपडेट|बदल)\b.{0,20}?\b"
-    r"(mobile|number|phone|email|contact|address|नंबर|ईमेल)\b",
+    rf"\b(?:{_UPD_VERB})\b.{{0,20}}?\b(?:{_UPD_FIELD})\b"
+    rf"|\b(?:{_UPD_FIELD})\b.{{0,20}}?\b(?:{_UPD_VERB})\b",
     re.IGNORECASE | re.DOTALL,
 )
 _WORD_RE = re.compile(r"[a-z]+")
@@ -210,29 +231,80 @@ register_structured_handler(IntentResult, _stub_handler)
 
 _SYSTEM_PROMPT = (
     "You are the triage agent for a multilingual insurance/lending support system. "
-    "Detect the language (en, hi, or hinglish), classify the customer's intent(s), and "
-    "extract entities (policy_id, claim_id, mobile, email). Intent types: information "
-    "(policy/FAQ question), action (account action — set the specific action: "
-    "get_claim_status, get_policy_details, update_contact, raise_ticket), complaint, "
-    "small_talk, unknown. Return all that apply for mixed requests."
+    "Classify the customer's intent(s) into this FIXED set and extract entities "
+    "(policy_id, claim_id, mobile, email).\n"
+    "Intent types: information, action, complaint, small_talk, unknown.\n"
+    "Action values (set `action` only for type=action): get_claim_status (check an existing "
+    "claim), get_policy_details (look up a policy), update_contact (change mobile/email), "
+    "raise_ticket (open a support ticket/complaint), file_claim (lodge a NEW insurance claim).\n"
+    "CRITICAL: A question about WHETHER or HOW to do something — 'can I…', 'how do I…', "
+    "'kya main … kar sakta/sakti hu', 'is it possible' — is type=information, NEVER an action. "
+    "Use an action ONLY when the customer directly asks you to perform it now "
+    "(e.g. 'update my number to 98…', 'file a claim for my hospital bill', 'raise a complaint'). "
+    "Use the conversation history to resolve short follow-ups like 'haan kar do' / 'ok do it'. "
+    "Return all intents that apply for mixed requests."
 )
 
 
-class TriageAgent:
-    """Sarvam-backed language detection + deterministic intent/entity classification.
+def _all_unknown(intents: list[Intent]) -> bool:
+    return all(i.type == IntentType.UNKNOWN for i in intents) if intents else True
 
-    Intent classification and entity extraction are deterministic (: correctness
-    over flexibility) — they drive compliance and tool selection and are what the eval suite
-    validates. Language detection routes through Sarvam's /text-lid endpoint: it
-    disambiguates Hinglish (romanized Hindi) from English far better than the regex marker
-    list. On Sarvam unavailability the deterministic detector takes over and the run is flagged
-    degraded.
+
+def _no_writes(intents: list[Intent]) -> list[Intent]:
+    """Downgrade state-changing actions to information (capability-question safety guard)."""
+    out: list[Intent] = []
+    for i in intents:
+        if i.type == IntentType.ACTION and i.action in _STEP_UP_ACTIONS_RT:
+            out.append(Intent(type=IntentType.INFORMATION, confidence=i.confidence))
+        else:
+            out.append(i)
+    return out or [Intent(type=IntentType.INFORMATION, confidence=0.7)]
+
+
+# Write actions (mirror authz step-up tier) — used by the capability-question guard.
+_STEP_UP_ACTIONS_RT = {"update_contact", "raise_ticket", "file_claim"}
+
+
+def _normalize(res: IntentResult) -> IntentResult:
+    """Fit the LLM's understanding into the closed intent/action set the gates expect.
+
+    The LLM may phrase loosely or invent an action; we clamp every intent to the enum and the
+    allowed-action set. An action with no valid tool becomes an information intent (answerable),
+    never an unauthorized write. This is what keeps the deterministic security gates safe even
+    though an LLM produced the label.
+    """
+    clean: list[Intent] = []
+    for i in res.intents:
+        action = i.action if i.action in _ALLOWED_ACTIONS else None
+        typ = i.type
+        if action:
+            typ = IntentType.ACTION
+        elif typ == IntentType.ACTION:
+            typ = IntentType.INFORMATION  # "action" with no valid tool -> answer, don't act
+        clean.append(Intent(type=typ, action=action, confidence=i.confidence or 0.7))
+    res.intents = clean or [Intent(type=IntentType.UNKNOWN, confidence=0.3)]
+    return res
+
+
+class TriageAgent:
+    """LLM-understood, deterministically-normalized triage.
+
+    The LLM (fast Groq/Cerebras) *understands* free phrasing and maps it into the FIXED intent
+    + action set; `_normalize` clamps the result so the downstream gates (compliance, step-up,
+    intent->domain map) stay deterministic and injection-safe regardless of what the LLM said.
+    Offline / in tests there is no key, so `structured()` falls to the stub — which returns the
+    deterministic regex classifier — keeping eval fully reproducible. If the LLM can't classify,
+    it is re-prompted once, then the deterministic classifier is the final fallback.
+
+    Language detection routes through Sarvam's /text-lid (best Hinglish discrimination), with a
+    deterministic fallback (degraded) and conversation-sticky carry-over for weak signals.
     """
 
     name = "triage"
 
     def __init__(self) -> None:
         self._sarvam = SarvamProvider()
+        self._llm = get_llm("triage")
 
     async def _detect_language(self, message: str) -> tuple[Language, bool]:
         """Returns (language, degraded). degraded=True only when Sarvam was expected but failed."""
@@ -246,8 +318,61 @@ class TriageAgent:
             log.warning("triage.sarvam_lid_failed", error=str(e))
             return detect_language(message), True
 
-    async def run(self, message: str) -> tuple[IntentResult, bool]:
-        result = classify(message)  # deterministic intent + entity + baseline language
+    async def _classify(
+        self, message: str, history: list[HistoryTurn], retry: bool = False
+    ) -> IntentResult:
+        """Understand the message via the LLM (stub -> deterministic) into the normalized set."""
+        system = _SYSTEM_PROMPT
+        if retry:
+            system += (
+                " The previous attempt was unclear. Pick the single most likely intent; only "
+                "use 'unknown' if truly nothing applies."
+            )
+        msgs = [Message(role="system", content=system)]
+        for h in history[-4:]:  # recent turns so follow-ups ("ok do it") resolve in context
+            role = "assistant" if h.role == "assistant" else "user"
+            msgs.append(Message(role=role, content=h.content))
+        msgs.append(Message(role="user", content=message))
+        try:
+            res = await self._llm.structured(msgs, IntentResult, max_tokens=300)
+        except LLMError as e:
+            log.warning("triage.intent_llm_failed", error=str(e))
+            return classify(message)  # deterministic fallback
+        return _normalize(res)
+
+    async def run(
+        self,
+        message: str,
+        hint: Language | None = None,
+        history: list[HistoryTurn] | None = None,
+    ) -> tuple[IntentResult, bool]:
+        history = history or []
+        # 1) Understand -> normalize. 2) Re-prompt once if undefined. 3) Deterministic floor.
+        result = await self._classify(message, history)
+        if _all_unknown(result.intents):
+            result = await self._classify(message, history, retry=True)
+        if _all_unknown(result.intents):
+            result = classify(message)
+        # Deterministic safety guard: a capability/permission QUESTION must never become a write,
+        # whatever the LLM said. Writes fire only on a direct request — keeps step-up honest.
+        if _hits(message.lower(), {k.lower() for k in _CAPABILITY}):
+            result.intents = _no_writes(result.intents)
+        # Entities come from precise regex (IDs/mobile/email), authoritative over any LLM guess.
+        result.entities = {**result.entities, **extract_entities(message)}
+
         language, degraded = await self._detect_language(message)
+        # Sticky language: a short / mostly-numeric reply ("3456", "ok", "yes") carries no
+        # reliable signal — keep the conversation's established language. Devanagari always wins.
+        if hint is not None and _is_weak_language_signal(message):
+            language = hint
         result.language = language
         return result, degraded
+
+
+def _is_weak_language_signal(text: str) -> bool:
+    """True when the message is too short/numeric to reliably detect a language from."""
+    if _DEVANAGARI.search(text):
+        return False  # Devanagari is an unambiguous Hindi signal
+    words = _WORD_RE.findall(text.lower())
+    # Few alphabetic words, or dominated by digits/IDs -> not enough signal.
+    return len(words) <= 3

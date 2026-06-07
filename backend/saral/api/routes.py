@@ -226,6 +226,7 @@ async def send_message(
             message=body.content,
             history=history,
             known_entities=mb.get_customer_context(user_id),
+            prev_language=convo.language,
         )
     )
     return MessageAccepted(conversation_id=conversation_id, message_id=msg.id, run_id=run_id)
@@ -267,6 +268,7 @@ async def reply(
         known_entities=mb.get_customer_context(user_id),
         pending_write=pending,
         intent_nonce=pending.intent_nonce if pending else 0,
+        prev_language=convo.language,
     )
 
     if convo.suspend_status == "awaiting_input" and convo.challenge_id:
