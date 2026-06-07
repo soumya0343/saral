@@ -119,6 +119,17 @@ Frontend:
 cd frontend && npm install && npm run dev   # http://localhost:3000
 ```
 
+The sign-in screen lists tap-to-login **demo accounts** (seeded hero customers with
+document-level data, ideal for testing grounded multilingual answers):
+
+| Name | Mobile | Try |
+|---|---|---|
+| Asha Verma | `9876500001` | "Why was my claim CLM2010 only partially approved?" (EN) |
+| Meena Kumari | `9876500003` | "मेरा क्लेम क्यों अस्वीकार हुआ?" (HI) |
+| Ramesh Iyer | `9876500010` | "CLM2050 reject kyun hua?" (Hinglish) |
+
+Any other name + mobile/email creates a fresh sandbox customer with a sample policy.
+
 > **LLM keys are optional in dev.** With no provider keys set
 > (`SARVAM_API_KEY` / `GEMINI_API_KEY` / `GROQ_API_KEY` / `CEREBRAS_API_KEY` /
 > `ANTHROPIC_API_KEY`), the system falls back to a deterministic stub provider, so the

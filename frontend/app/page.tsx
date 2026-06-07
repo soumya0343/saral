@@ -68,29 +68,50 @@ function TraceLine({ e }: { e: TraceEvent }) {
   );
 }
 
+// Seeded hero customers (data/customers/manifest.yaml) — each showcases per-customer grounding.
+const DEMO_ACCOUNTS = [
+  {
+    name: "Asha Verma",
+    contact: "9876500001",
+    tag: "Health · EN",
+    note: "Partial-claim CLM2010 — proportionate deduction + co-pay (Clause 4.1 / 4.2)",
+  },
+  {
+    name: "Meena Kumari",
+    contact: "9876500003",
+    tag: "Term life · HI",
+    note: "Lapsed policy; claim CLM2030 rejected for non-payment (Clause 6.2)",
+  },
+  {
+    name: "Ramesh Iyer",
+    contact: "9876500010",
+    tag: "Health · HI",
+    note: "Rider claim CLM2050 rejected — diabetes not covered (Clause R1.3)",
+  },
+];
+
 function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
   const [name, setName] = useState("");
   const [contact, setContact] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
 
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
+  async function authenticate(n: string, c: string) {
     setErr(null);
-    if (!name.trim() || !contact.trim()) {
+    if (!n.trim() || !c.trim()) {
       setErr("Please enter your name and a mobile number or email.");
       return;
     }
-    const isEmail = contact.includes("@");
+    const isEmail = c.includes("@");
     setBusy(true);
     try {
       const r = await fetch(`${API_URL}/customers`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
-          name: name.trim(),
-          mobile: isEmail ? null : contact.trim(),
-          email: isEmail ? contact.trim() : null,
+          name: n.trim(),
+          mobile: isEmail ? null : c.trim(),
+          email: isEmail ? c.trim() : null,
         }),
       });
       if (!r.ok) {
@@ -106,45 +127,104 @@ function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
   }
 
   return (
-    <main className="mx-auto flex min-h-screen max-w-md flex-col justify-center gap-6 p-6">
-      <div>
-        <h1 className="text-3xl font-semibold">सरल · Saral</h1>
-        <p className="mt-1 text-neutral-500">
-          Welcome to support. To get started, please verify your identity.
-        </p>
+    <main className="mx-auto flex min-h-screen max-w-4xl flex-col justify-center gap-8 p-6">
+      <div className="grid grid-cols-1 items-start gap-8 md:grid-cols-2">
+        {/* Left: sign-in */}
+        <div className="flex flex-col gap-6">
+          <div>
+            <h1 className="text-3xl font-semibold">सरल · Saral</h1>
+            <p className="mt-1 text-neutral-500">
+              Welcome to support. To get started, please verify your identity.
+            </p>
+          </div>
+          <form
+            onSubmit={(e) => {
+              e.preventDefault();
+              authenticate(name, contact);
+            }}
+            className="flex flex-col gap-3"
+          >
+            <label className="text-sm">
+              <span className="text-neutral-500">Your name</span>
+              <input
+                value={name}
+                onChange={(e) => setName(e.target.value)}
+                placeholder="e.g. Asha Verma"
+                className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
+              />
+            </label>
+            <label className="text-sm">
+              <span className="text-neutral-500">Registered mobile or email</span>
+              <input
+                value={contact}
+                onChange={(e) => setContact(e.target.value)}
+                placeholder="9876500001 or you@example.com"
+                className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
+              />
+            </label>
+            {err && <p className="text-sm text-red-500">{err}</p>}
+            <button
+              type="submit"
+              disabled={busy}
+              className="mt-2 rounded-xl bg-neutral-900 px-5 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+            >
+              {busy ? "Verifying…" : "Continue"}
+            </button>
+          </form>
+          <p className="rounded-lg bg-neutral-100 p-3 text-xs leading-relaxed text-neutral-500 dark:bg-neutral-900">
+            <span className="font-medium text-neutral-600 dark:text-neutral-300">
+              Note —
+            </span>{" "}
+            In production this screen is the bank/insurer&apos;s own login, where
+            authentication happens. Saral embeds in that app and simply{" "}
+            <em>consumes</em> the session token it issues — it never authenticates the
+            customer itself. This form is a stand-in for that host login.
+          </p>
+        </div>
+
+        {/* Right: demo accounts (mock data for testing the differentiator) */}
+        <div className="rounded-xl border border-dashed border-neutral-300 p-4 text-sm dark:border-neutral-700">
+          <div className="mb-1 flex items-center justify-between">
+            <span className="font-medium">Demo accounts</span>
+            <span className="rounded-full bg-amber-100 px-2 py-0.5 text-[10px] font-medium uppercase tracking-wide text-amber-800 dark:bg-amber-950 dark:text-amber-300">
+              sandbox
+            </span>
+          </div>
+          <p className="mb-3 text-xs text-neutral-500">
+            Tap to sign in — each has document-level policy &amp; claim data for grounded,
+            multilingual answers.
+          </p>
+          <div className="flex flex-col gap-2">
+            {DEMO_ACCOUNTS.map((a) => (
+              <button
+                key={a.contact}
+                type="button"
+                disabled={busy}
+                onClick={() => {
+                  setName(a.name);
+                  setContact(a.contact);
+                  authenticate(a.name, a.contact);
+                }}
+                className="flex flex-col rounded-lg border border-neutral-200 px-3 py-2 text-left transition hover:bg-neutral-100 disabled:opacity-50 dark:border-neutral-800 dark:hover:bg-neutral-900"
+              >
+                <span className="flex items-center justify-between">
+                  <span className="font-medium">{a.name}</span>
+                  <span className="font-mono text-xs text-neutral-500">{a.contact}</span>
+                </span>
+                <span className="mt-0.5 flex items-center gap-2">
+                  <span className="rounded bg-neutral-100 px-1.5 py-0.5 text-[10px] text-neutral-600 dark:bg-neutral-800 dark:text-neutral-300">
+                    {a.tag}
+                  </span>
+                  <span className="text-xs text-neutral-500">{a.note}</span>
+                </span>
+              </button>
+            ))}
+          </div>
+          <p className="mt-3 text-xs text-neutral-400">
+            Any new name + mobile/email creates a fresh sandbox customer with a sample policy.
+          </p>
+        </div>
       </div>
-      <form onSubmit={submit} className="flex flex-col gap-3">
-        <label className="text-sm">
-          <span className="text-neutral-500">Your name</span>
-          <input
-            value={name}
-            onChange={(e) => setName(e.target.value)}
-            placeholder="e.g. Asha Verma"
-            className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
-          />
-        </label>
-        <label className="text-sm">
-          <span className="text-neutral-500">Registered mobile or email</span>
-          <input
-            value={contact}
-            onChange={(e) => setContact(e.target.value)}
-            placeholder="9876500001 or you@example.com"
-            className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
-          />
-        </label>
-        {err && <p className="text-sm text-red-500">{err}</p>}
-        <button
-          type="submit"
-          disabled={busy}
-          className="mt-2 rounded-xl bg-neutral-900 px-5 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
-        >
-          {busy ? "Verifying…" : "Continue"}
-        </button>
-        <p className="text-xs text-neutral-400">
-          New here? You’ll be set up with a sample policy. Returning? Use the mobile/email on
-          file (e.g. 9876500001).
-        </p>
-      </form>
     </main>
   );
 }

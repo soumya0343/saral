@@ -15,6 +15,7 @@ RUN --mount=type=cache,target=/root/.cache/uv \
 
 # App source
 COPY backend ./backend
+COPY alembic.ini ./alembic.ini
 
 # Policy corpus, per-customer docs, and eval scenarios are read from data/ at runtime.
 COPY data ./data

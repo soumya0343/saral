@@ -30,6 +30,22 @@ services:
       timeout: 3s
       retries: 10
 
+  # One-shot: apply DB migrations against the docker postgres before api/worker start.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DATABASE_URL: postgresql+asyncpg://saral:saral@postgres:5432/saral
+    env_file:
+      - path: .env
+        required: false
+    command: ["alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   api:
     build:
       context: .
@@ -47,6 +63,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
   worker:
     build:
@@ -63,6 +81,8 @@ services:
         condition: service_healthy
       redis:
         condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   pgdata:

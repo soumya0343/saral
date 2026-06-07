@@ -56,11 +56,13 @@ class Settings(BaseSettings):
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
     gemini_model: str = "gemini-2.0-flash"
     # Default ordered fallback chain; providers without a key are skipped, then stub.
-    llm_provider_order: str = "sarvam,anthropic,stub"
+    # Sarvam is intentionally NOT a chat provider — it is used ONLY for language detection
+    # (/text-lid, in triage). All generation/judging runs on Gemini/Groq/Cerebras.
+    llm_provider_order: str = "gemini,groq,cerebras,stub"
     # Per-role chains: models assigned per role, not one global chain. A blank role
-    # falls back to llm_provider_order. Synthesis -> Hindi-strong Gemini; triage-classify ->
-    # fast Groq/Cerebras; judge is PINNED (no mid-suite swap that would break comparability).
-    llm_role_synthesis: str = "gemini,sarvam,stub"
+    # falls back to llm_provider_order. Synthesis -> Hindi-strong Gemini (Groq/Cerebras
+    # fallback); triage-classify -> fast Groq/Cerebras; judge is PINNED (no mid-suite swap).
+    llm_role_synthesis: str = "gemini,groq,cerebras,stub"
     llm_role_triage: str = "groq,cerebras,stub"
     llm_role_judge: str = "gemini,stub"
     anthropic_model: str = "claude-sonnet-4-6"
