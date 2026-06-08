@@ -3,8 +3,10 @@ FROM ghcr.io/astral-sh/uv:python3.12-bookworm-slim AS base
 
 ENV UV_COMPILE_BYTECODE=1 \
     UV_LINK_MODE=copy \
+    UV_HTTP_TIMEOUT=300 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/backend \
+    VIRTUAL_ENV=/app/.venv \
     PATH="/app/.venv/bin:$PATH"
 
 WORKDIR /app
@@ -12,10 +14,19 @@ WORKDIR /app
 COPY pyproject.toml uv.lock README.md ./
 RUN --mount=type=cache,target=/root/.cache/uv \
     uv sync --frozen --no-install-project --no-dev
+# Local multilingual-e5 (cross-lingual retrieval — the differentiator: an English query must
+# match Hindi docs). Install CPU-only torch first to avoid the multi-GB CUDA wheels, then
+# sentence-transformers (sees torch already satisfied).
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install torch --index-url https://download.pytorch.org/whl/cpu \
+    && uv pip install sentence-transformers
 
 COPY backend ./backend
 
 # The worker builds the RAG index (generic + per-customer) and runs eval scenarios from data/.
 COPY data ./data
+
+# Pre-download the e5 weights at build time so the first request isn't slow.
+RUN python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('intfloat/multilingual-e5-small')"
 
 CMD ["python", "-m", "saral.worker.main"]
