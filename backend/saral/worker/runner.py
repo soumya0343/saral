@@ -32,6 +32,7 @@ async def execute_run(req: RunRequest) -> RunState:
         intent_nonce=req.intent_nonce,
         resume_reply=req.resume_reply,
         challenge_response=req.challenge_response,
+        reply_text=req.reply_text,
         language_hint=Language(req.prev_language) if req.prev_language else None,
     )
     # Resume from a checkpoint if this run was interrupted mid-flight (worker crash).

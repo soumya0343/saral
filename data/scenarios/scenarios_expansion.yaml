@@ -293,7 +293,7 @@
   xling_group: g_write_update
   human_label: true
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [update_contact] }
+  expected: { route: suspend, status: escalated, tools: [] }
 
 - id: write_update_u1003_hi
   category: action
@@ -302,7 +302,7 @@
   message: "मेरा मोबाइल नंबर 9876511114 अपडेट करें"
   xling_group: g_write_update
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [update_contact] }
+  expected: { route: suspend, status: escalated, tools: [] }
 
 - id: write_update_u1003_hinglish
   category: action
@@ -311,7 +311,7 @@
   message: "mera mobile number update karo 9876511115"
   xling_group: g_write_update
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [update_contact] }
+  expected: { route: suspend, status: escalated, tools: [] }
 
 - id: write_update_suspend_en
   category: action

@@ -16,6 +16,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
+from saral.actions.resume import interpret_resume
 from saral.auth import decode_token, mint_session_token, verify_step_up
 from saral.auth.tokens import AuthError
 from saral.compliance.pii import redact_pii
@@ -255,6 +256,7 @@ async def reply(
     user_id, tenant_id, auth_level, token = _claims_or_refresh(convo)
     pending = PendingWrite(**convo.pending_write) if convo.pending_write else None
     original = convo.original_message or body.content
+    history = await _history(db, conversation_id)
     await _append_message(db, convo, "user", body.content)
 
     req = RunRequest(
@@ -264,26 +266,48 @@ async def reply(
         tenant_id=tenant_id,
         auth_level=auth_level,
         message=original,  # re-send the original so the write re-evaluates (not the reply)
-        history=await _history(db, conversation_id),
+        history=history,
         known_entities=mb.get_customer_context(user_id),
         pending_write=pending,
         intent_nonce=pending.intent_nonce if pending else 0,
         prev_language=convo.language,
+        reply_text=body.content,  # the customer's actual words this turn (language detection)
     )
 
     if convo.suspend_status == "awaiting_input" and convo.challenge_id:
-        # Step-up OTP reply. Verify, then re-mint at step_up (or escalate on failure).
+        # Step-up OTP reply. A one-time code is a security credential — verified deterministically,
+        # never interpreted by an LLM. Verify, then re-mint at step_up (or escalate on failure).
         if verify_step_up(convo.challenge_id, body.content, user_id):
             fresh = mint_session_token(user_id, tenant_id=tenant_id, auth_level=AuthLevel.STEP_UP)
             convo.session_token = fresh
             req.auth_level = AuthLevel.STEP_UP
         else:
             req.challenge_response = body.content  # wrong OTP -> graph escalates
-    elif convo.suspend_status == "awaiting_input":
-        # Clarification (missing arg): fold the answer into the original so triage re-extracts.
-        req.message = f"{original} {body.content}".strip()
-    elif convo.suspend_status == "awaiting_confirmation":
-        req.resume_reply = body.content  # yes/no; identity re-validates before any write
+    else:
+        # Option B: an LLM interprets the reply (confirm / reject / value / correction / other)
+        # from the suspend context + history. The write trigger stays deterministic — a "confirm"
+        # is normalized to the canonical "yes" and identity_node re-parses yes/no before acting,
+        # so the LLM understands phrasing but never fires (or raises) a write on its own.
+        verdict = await interpret_resume(
+            convo.suspend_status, pending, original, body.content, history
+        )
+        if convo.suspend_status == "awaiting_confirmation":
+            if verdict.kind == "confirm":
+                req.resume_reply = "yes"
+            elif verdict.kind == "reject":
+                req.resume_reply = "no"  # identity abandons the pending write (cancelled)
+            else:  # value / correction / other → topic switch: drop pending, run fresh
+                req.message = body.content
+                req.pending_write = None
+                req.intent_nonce = 0
+        else:  # awaiting_input clarification (missing contact value)
+            if verdict.kind == "value":
+                # Fold the value into the original so triage/identity re-extract (or flag invalid).
+                req.message = f"{original} {body.content}".strip()
+            else:  # correction / reject / other → run fresh; triage + history resolve it
+                req.message = body.content
+                req.pending_write = None
+                req.intent_nonce = 0
 
     # Clear suspend custody now; the worker will re-set it if the run suspends again.
     convo.suspend_status = None

@@ -79,6 +79,7 @@ class RunState(BaseModel):
     # Resume inputs (set on a confirmation/clarification reply; see /conversations/{id}/reply):
     resume_reply: str | None = None
     challenge_response: str | None = None
+    reply_text: str | None = None  # the customer's actual typed reply (language detection)
 
     # Specialists that failed; the run continues in degraded mode.
     degraded_agents: Annotated[list[str], operator.add] = Field(default_factory=list)

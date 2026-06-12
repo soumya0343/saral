@@ -23,7 +23,7 @@ async def _run(**kw) -> RunState:
     return RunState.model_validate(await build_graph().ainvoke(init))
 
 
-async def test_full_stepup_confirm_execute_no_double_write():
+async def test_full_stepup_confirm_raises_to_rm():
     # Turn 1 — session level: write detected → suspend for step-up (OTP).
     t1 = await _run(raw_message=ORIG, auth_level=AuthLevel.SESSION)
     assert t1.status == "awaiting_input"
@@ -52,7 +52,8 @@ async def test_full_stepup_confirm_execute_no_double_write():
     assert "9000000000" in t2.final_response.message  # the parsed value is read back
     assert not any(a.ok for a in t2.actions)  # still not executed
 
-    # Turn 3 — explicit "yes" → idempotent write fires, resolved.
+    # Turn 3 — explicit "yes" → the agent does NOT execute; it raises the change to the RM for
+    # approval and records an awaiting_manager_approval artifact. The write never fires here.
     t3 = await _run(
         run_id="r3",
         raw_message=ORIG,
@@ -61,21 +62,12 @@ async def test_full_stepup_confirm_execute_no_double_write():
         intent_nonce=pw.intent_nonce,
         resume_reply="yes",
     )
-    assert t3.status == "resolved"
-    assert any(a.tool == "update_contact" and a.ok for a in t3.actions)
-
-    # Re-run the confirmed turn (simulates a crash-resume) → same idempotency key, no double write.
-    t3b = await _run(
-        run_id="r3b",
-        raw_message=ORIG,
-        auth_level=AuthLevel.STEP_UP,
-        pending_write=pw,
-        intent_nonce=pw.intent_nonce,
-        resume_reply="yes",
-    )
-    rec = next(a for a in t3b.actions if a.tool == "update_contact")
-    assert rec.ok
-    assert rec.idempotency_key == pw.idempotency_key  # exactly-once key reused (NFR-7)
+    assert t3.status == "escalated"
+    assert not any(a.ok for a in t3.actions)  # no execution by the agent
+    assert t3.escalation is not None
+    assert t3.escalation.blocking_reason == "awaiting_manager_approval"
+    assert t3.escalation.pending_action == "update_contact"
+    assert "9000000000" in t3.final_response.message  # the requested value is echoed back
 
 
 async def test_stepup_failure_escalates():

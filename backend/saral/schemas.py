@@ -266,6 +266,9 @@ class RunRequest(BaseModel):
     known_entities: dict[str, Any] = Field(default_factory=dict)
     # Resume of a suspended run: the customer's reply to a confirmation / clarification.
     resume_reply: str | None = None
+    # The customer's ACTUAL typed reply this turn (for language detection — the processed
+    # `message` may be the re-sent original, which would lock the language to that turn).
+    reply_text: str | None = None
     pending_write: PendingWrite | None = None
     intent_nonce: int = 0
     # Step-up challenge echoed back by the customer (the OTP), validated on resume.

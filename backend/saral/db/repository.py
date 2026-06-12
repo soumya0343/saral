@@ -14,6 +14,8 @@ from datetime import UTC, datetime
 
 from sqlalchemy import func, select
 
+from saral.auth import mint_session_token
+from saral.authz.policy import requires_step_up
 from saral.compliance import audit
 from saral.compliance.pii import redact_pii
 from saral.db.models import (
@@ -142,6 +144,19 @@ async def persist_run(state: RunState) -> None:
                 convo.pending_write = None
                 convo.challenge_id = None
                 convo.original_message = None
+                # Step-up is CONSUMED by the write it authorized: once a critical write is acted
+                # on — executed OR raised to the RM for approval — downgrade the conversation
+                # token back to SESSION so the next sensitive change re-earns OTP. (Authority is
+                # mortal — it doesn't carry to the next write.)
+                executed = any(a.ok and requires_step_up(a.tool) for a in state.actions)
+                raised_to_rm = (
+                    state.escalation is not None
+                    and state.escalation.blocking_reason == "awaiting_manager_approval"
+                )
+                if executed or raised_to_rm:
+                    convo.session_token = mint_session_token(
+                        convo.user_id, tenant_id=convo.tenant_id
+                    )
             convo.status = state.status
             # Remember the conversation's language so short follow-ups stay in it (sticky).
             if state.language:

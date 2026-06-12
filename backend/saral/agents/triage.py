@@ -115,7 +115,9 @@ _EMAIL_RE = re.compile(r"\b([\w.+-]+@[\w-]+\.[\w.-]+)\b")
 # Action: "update/change ... (mobile|number|email|contact|address)".
 # Match an update verb and a contact field in EITHER order ("change my number" /
 # "phone number change karna hai"). Verbs include Hinglish badal/badalna and Devanagari.
-_UPD_VERB = r"update|change|badal|badalna|badl|naya|new|अपडेट|बदल|बदलना|चेंज"
+# Verb stems with optional suffixes so Hinglish inflections all match:
+# badal/badalna/badlo/badaldo/badlu ... and Devanagari बदल/बदलो/बदलना.
+_UPD_VERB = r"update|chang\w*|badal\w*|badl\w*|naya|new|अपडेट|बदल\w*|चेंज"
 _UPD_FIELD = r"mobile|number|phone|email|contact|address|नंबर|मोबाइल|ईमेल|फोन"
 _UPDATE_RE = re.compile(
     rf"\b(?:{_UPD_VERB})\b.{{0,20}}?\b(?:{_UPD_FIELD})\b"
@@ -242,7 +244,11 @@ _SYSTEM_PROMPT = (
     "'kya main … kar sakta/sakti hu', 'is it possible' — is type=information, NEVER an action. "
     "Use an action ONLY when the customer directly asks you to perform it now "
     "(e.g. 'update my number to 98…', 'file a claim for my hospital bill', 'raise a complaint'). "
-    "Use the conversation history to resolve short follow-ups like 'haan kar do' / 'ok do it'. "
+    "Use the conversation history to resolve short follow-ups like 'haan kar do' / 'ok do it', "
+    "and corrections mid-flow: if you asked for a new email and the customer replies 'nahi, "
+    "mobile' / 'mobile badlo', that is update_contact for the MOBILE field (not email). When the "
+    "customer supplies just a value in reply to your question (a bare number or email), attach it "
+    "to the pending update_contact and put it in entities (mobile or email). "
     "Also set `search_query`: a STANDALONE retrieval query for the user's request — resolve "
     "references and follow-ups using the history (e.g. 'samajh nahi aaya' after a claim question "
     "-> 'why was my claim rejected'); if the message is already self-contained, copy it as-is. "
@@ -349,18 +355,28 @@ class TriageAgent:
         message: str,
         hint: Language | None = None,
         history: list[HistoryTurn] | None = None,
+        lang_text: str | None = None,
     ) -> tuple[IntentResult, bool]:
         history = history or []
-        # Deterministic FIRST (fast, free, reproducible). Only when it can't classify do we
-        # spend an LLM call to UNDERSTAND the phrasing — this keeps scarce free-tier LLM budget
-        # for the grounded answer (synthesis), and re-prompts the LLM once if still undefined.
-        result = classify(message)
-        if _all_unknown(result.intents) and self._llm.has_real_provider:
-            llm_res = await self._classify(message, history)
-            if _all_unknown(llm_res.intents):
-                llm_res = await self._classify(message, history, retry=True)
-            if not _all_unknown(llm_res.intents):
-                result = llm_res
+        # Detect language from the customer's actual words this turn (lang_text) when given —
+        # during a resumed write the processed `message` is the re-sent original, whose language
+        # would otherwise lock the whole flow.
+        detect_from = lang_text or message
+        # LLM-PRIMARY understanding: the model reads the conversation history and resolves free
+        # phrasing, inflections ("badlo"), corrections ("nahi, mobile"), and follow-ups ("ok do
+        # it") that a fixed lexicon can't. The deterministic classifier is the offline/stub
+        # fallback (no key -> reproducible eval) and the last resort if the LLM can't decide.
+        # Security stays deterministic regardless: _normalize clamps to the allowed-action set,
+        # the capability guard below blocks writes from "can I…?", and entities are re-validated
+        # by regex — so what the LLM understood can never widen scope or fire an unsafe write.
+        if self._llm.has_real_provider:
+            result = await self._classify(message, history)
+            if _all_unknown(result.intents):
+                result = await self._classify(message, history, retry=True)
+            if _all_unknown(result.intents):
+                result = classify(message)  # deterministic last resort
+        else:
+            result = classify(message)  # no real provider: deterministic (offline/eval)
         # Deterministic safety guard: a capability/permission QUESTION must never become a write,
         # whatever the LLM said. Writes fire only on a direct request — keeps step-up honest.
         if _hits(message.lower(), {k.lower() for k in _CAPABILITY}):
@@ -368,10 +384,10 @@ class TriageAgent:
         # Entities come from precise regex (IDs/mobile/email), authoritative over any LLM guess.
         result.entities = {**result.entities, **extract_entities(message)}
 
-        language, degraded = await self._detect_language(message)
+        language, degraded = await self._detect_language(detect_from)
         # Sticky language: a short / mostly-numeric reply ("3456", "ok", "yes") carries no
         # reliable signal — keep the conversation's established language. Devanagari always wins.
-        if hint is not None and _is_weak_language_signal(message):
+        if hint is not None and _is_weak_language_signal(detect_from):
             language = hint
         result.language = language
         return result, degraded
