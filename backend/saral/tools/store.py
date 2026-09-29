@@ -9,6 +9,9 @@ thread + timeout), so this uses a sync engine.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import secrets
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -85,14 +88,41 @@ class MMeta(MockBase):
 
 
 class MChallenge(MockBase):
-    """Step-up OTP challenge. Synthetic: code returned in non-prod, no SMS."""
+    """OTP challenge (step-up or login). The code itself is never stored: only an HMAC keyed by
+    the server secret, so a leaked table can't be brute-forced offline. Single-use, TTL-bound,
+    and burned after `otp_max_attempts` wrong guesses. (Supersedes the plaintext
+    `mock_challenges` table, which is left unused.)"""
 
-    __tablename__ = "mock_challenges"
+    __tablename__ = "mock_otp_challenges"
     challenge_id: Mapped[str] = mapped_column(String(48), primary_key=True)
     user_id: Mapped[str] = mapped_column(String(32), index=True)
-    code: Mapped[str] = mapped_column(String(8))
+    purpose: Mapped[str] = mapped_column(String(16), default="step_up")
+    code_hash: Mapped[str] = mapped_column(String(64))
     expires_epoch: Mapped[int] = mapped_column(Integer)
+    attempts: Mapped[int] = mapped_column(Integer, default=0)
     used: Mapped[int] = mapped_column(Integer, default=0)
+
+
+class MRefreshToken(MockBase):
+    """Mock-IdP refresh token. Only a SHA-256 of the opaque token is stored. Rotated on every
+    use; presenting an already-rotated token revokes its whole family (theft signal)."""
+
+    __tablename__ = "mock_refresh_tokens"
+    token_hash: Mapped[str] = mapped_column(String(64), primary_key=True)
+    user_id: Mapped[str] = mapped_column(String(32), index=True)
+    tenant_id: Mapped[str] = mapped_column(String(64))
+    family_id: Mapped[str] = mapped_column(String(32), index=True)
+    expires_epoch: Mapped[int] = mapped_column(Integer)
+    revoked: Mapped[int] = mapped_column(Integer, default=0)
+
+
+def _sha256(raw: str) -> str:
+    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
+
+
+def _code_hash(challenge_id: str, code: str) -> str:
+    key = get_settings().session_secret.encode("utf-8")
+    return hmac.new(key, f"{challenge_id}|{code}".encode(), hashlib.sha256).hexdigest()
 
 
 # --- Seed data (pre-existing customers for cross-user / authorization demos) ---
@@ -240,46 +270,127 @@ class Store:
     def reset(self) -> None:
         """Test helper: wipe + reseed."""
         with Session(self.engine) as s:
-            for model in (MChallenge, MIdem, MTicket, MClaim, MPolicy, MUser, MMeta):
+            for model in (
+                MChallenge, MRefreshToken, MIdem, MTicket, MClaim, MPolicy, MUser, MMeta
+            ):
                 s.query(model).delete()
             s.commit()
         self.seed()
 
-    # --- step-up challenges ---
-    def create_challenge(self, user_id: str, code: str, ttl_s: int) -> str:
-        import time
-
-        challenge_id = f"chl_{user_id}_{int(time.time() * 1000)}"
+    # --- OTP challenges (step-up + login) ---
+    def create_challenge(
+        self, user_id: str, code: str, ttl_s: int, purpose: str = "step_up"
+    ) -> str:
+        challenge_id = f"chl_{secrets.token_urlsafe(18)}"  # unguessable, not user/time derived
         with Session(self.engine) as s:
             s.add(
                 MChallenge(
                     challenge_id=challenge_id,
                     user_id=user_id,
-                    code=code,
+                    purpose=purpose,
+                    code_hash=_code_hash(challenge_id, code),
                     expires_epoch=int(time.time()) + ttl_s,
-)
-)
+                )
+            )
             s.commit()
         return challenge_id
 
-    def verify_challenge(self, challenge_id: str, response: str, user_id: str) -> bool:
-        """Single-use, TTL-bounded, ownership-bound. Returns True only on an exact match."""
-        import time
-
+    def verify_challenge(
+        self, challenge_id: str, response: str, user_id: str, purpose: str = "step_up"
+    ) -> bool:
+        """Single-use, TTL-bounded, ownership- and purpose-bound, attempt-limited."""
+        max_attempts = get_settings().otp_max_attempts
         with Session(self.engine) as s:
             ch = s.get(MChallenge, challenge_id)
-            if ch is None or ch.used or ch.user_id != user_id:
+            if ch is None or ch.used or ch.user_id != user_id or ch.purpose != purpose:
                 return False
-            if int(time.time()) > ch.expires_epoch:
+            if int(time.time()) > ch.expires_epoch or ch.attempts >= max_attempts:
                 return False
-            if (response or "").strip() != ch.code:
+            if not hmac.compare_digest(
+                ch.code_hash, _code_hash(challenge_id, (response or "").strip())
+            ):
+                ch.attempts += 1
+                if ch.attempts >= max_attempts:
+                    ch.used = 1  # burned: too many wrong guesses
+                s.commit()
                 return False
             ch.used = 1  # single-use: burn the challenge on success
             s.commit()
             return True
 
+    def challenge_attempts_left(self, challenge_id: str) -> int:
+        with Session(self.engine) as s:
+            ch = s.get(MChallenge, challenge_id)
+            if ch is None or ch.used or int(time.time()) > ch.expires_epoch:
+                return 0
+            return max(get_settings().otp_max_attempts - ch.attempts, 0)
+
+    def challenge_owner(self, challenge_id: str, purpose: str) -> str | None:
+        """user_id a live challenge was issued to (login verify knows only the challenge)."""
+        with Session(self.engine) as s:
+            ch = s.get(MChallenge, challenge_id)
+            if ch is None or ch.purpose != purpose:
+                return None
+            return ch.user_id
+
+    # --- refresh tokens (mock IdP) ---
+    def issue_refresh(self, user_id: str, tenant_id: str, family_id: str | None = None) -> str:
+        raw = secrets.token_urlsafe(32)
+        ttl_s = get_settings().refresh_ttl_days * 86400
+        with Session(self.engine) as s:
+            s.add(
+                MRefreshToken(
+                    token_hash=_sha256(raw),
+                    user_id=user_id,
+                    tenant_id=tenant_id,
+                    family_id=family_id or secrets.token_hex(16),
+                    expires_epoch=int(time.time()) + ttl_s,
+                )
+            )
+            s.commit()
+        return raw
+
+    def rotate_refresh(self, raw: str) -> tuple[str, str, str]:
+        """Consume a refresh token -> (user_id, tenant_id, new_raw). Raises ToolError if invalid.
+        Reuse of an already-rotated token revokes the whole family."""
+        with Session(self.engine) as s:
+            row = s.get(MRefreshToken, _sha256(raw or ""))
+            if row is None:
+                raise ToolError("invalid refresh token")
+            if row.revoked:
+                self._revoke_where(s, MRefreshToken.family_id == row.family_id)
+                s.commit()
+                log.warning("auth.refresh_reuse_detected", family=row.family_id)
+                raise ToolError("refresh token reused; session revoked")
+            if int(time.time()) > row.expires_epoch:
+                raise ToolError("refresh token expired")
+            row.revoked = 1
+            user_id, tenant_id, family = row.user_id, row.tenant_id, row.family_id
+            s.commit()
+        return user_id, tenant_id, self.issue_refresh(user_id, tenant_id, family_id=family)
+
+    def revoke_refresh(self, raw: str) -> None:
+        with Session(self.engine) as s:
+            row = s.get(MRefreshToken, _sha256(raw or ""))
+            if row is not None:
+                self._revoke_where(s, MRefreshToken.family_id == row.family_id)
+                s.commit()
+
+    def revoke_user_sessions(self, user_id: str) -> None:
+        with Session(self.engine) as s:
+            self._revoke_where(s, MRefreshToken.user_id == user_id)
+            s.commit()
+
+    @staticmethod
+    def _revoke_where(s: Session, cond) -> None:
+        for row in s.scalars(select(MRefreshToken).where(cond)).all():
+            row.revoked = 1
+
     def _next_id(self, s: Session) -> int:
         meta = s.get(MMeta, "id_seq")
+        if meta is None:  # seeded at startup; absent only if the table was wiped externally
+            meta = MMeta(name="id_seq", n=5000)
+            s.add(meta)
         meta.n += 1
         return meta.n
 
@@ -406,6 +517,20 @@ class Store:
             return claim
 
     # --- identity ---
+    def find_customer(self, mobile: str | None, email: str | None) -> dict | None:
+        """Existing customer by registered mobile/email, or None. Does NOT authenticate."""
+        with Session(self.engine) as s:
+            q = select(MUser)
+            existing = None
+            if mobile:
+                existing = s.scalar(q.where(MUser.mobile == mobile))
+            if existing is None and email:
+                existing = s.scalar(q.where(func.lower(MUser.email) == email.lower()))
+            if existing is None:
+                return None
+            return {"user_id": existing.id, "name": existing.name,
+                    "mobile": existing.mobile, "email": existing.email}
+
     def identify_customer(self, name: str, mobile: str | None, email: str | None) -> dict:
         if not name or not (mobile or email):
             raise ToolError("name and a mobile number or email are required")
@@ -441,6 +566,11 @@ class Store:
                 "policy_id": policy_id,
                 "claim_id": None,
             }
+
+    def get_customer(self, user_id: str) -> dict | None:
+        with Session(self.engine) as s:
+            u = s.get(MUser, user_id)
+            return None if u is None else {"user_id": u.id, "name": u.name}
 
     def get_customer_context(self, user_id: str) -> dict:
         with Session(self.engine) as s:

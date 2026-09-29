@@ -83,6 +83,15 @@ export default function EvalDashboard() {
     setError(null);
     try {
       const r = await fetch(`${API_URL}/eval/run`, { method: "POST" });
+      if (!r.ok) {
+        // In prod, running the suite spends free-tier quota, so it isn't public: use `make eval`.
+        setError(
+          r.status === 404 || r.status === 401
+            ? "Running the suite over HTTP is disabled on this deployment. Run `make eval` instead."
+            : `Eval run failed (${r.status}).`,
+        );
+        return;
+      }
       setReport(await r.json());
     } catch (e) {
       setError(String(e));

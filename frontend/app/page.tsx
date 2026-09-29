@@ -17,13 +17,126 @@ type ChatTurn = {
   trace?: TraceEvent[];
 };
 
+type Tokens = { access_token: string; refresh_token: string };
+
 type Customer = {
   user_id: string;
   name: string;
   returning: boolean;
-  policy_id?: string;
-  claim_id?: string;
+  policy_id?: string | null;
+  claim_id?: string | null;
 };
+
+type CustomerSession = Customer & { tokens: Tokens };
+
+// --- Session: the browser holds its own short access token + rotating refresh token. ---
+// Identity on the server comes only from the access token. When it expires the refresh token
+// silently gets a new pair; conversation history is keyed by customer, so nothing is lost.
+const AUTH_KEY = "saral_auth";
+
+function loadTokens(): Tokens | null {
+  try {
+    return JSON.parse(localStorage.getItem(AUTH_KEY) ?? "null");
+  } catch {
+    return null;
+  }
+}
+
+function saveTokens(t: Tokens | null) {
+  try {
+    if (t)
+      localStorage.setItem(
+        AUTH_KEY,
+        JSON.stringify({ access_token: t.access_token, refresh_token: t.refresh_token }),
+      );
+    else localStorage.removeItem(AUTH_KEY);
+  } catch {
+    /* storage unavailable: session lasts for this page only */
+  }
+}
+
+let refreshing: Promise<boolean> | null = null;
+
+// Single-flight refresh so parallel 401s rotate the refresh token only once.
+function refreshSession(): Promise<boolean> {
+  if (!refreshing) {
+    refreshing = (async () => {
+      const t = loadTokens();
+      if (!t) return false;
+      try {
+        const r = await fetch(`${API_URL}/auth/refresh`, {
+          method: "POST",
+          headers: { "content-type": "application/json" },
+          body: JSON.stringify({ refresh_token: t.refresh_token }),
+        });
+        if (!r.ok) {
+          saveTokens(null);
+          return false;
+        }
+        saveTokens(await r.json());
+        return true;
+      } catch {
+        return false;
+      }
+    })().finally(() => {
+      refreshing = null;
+    });
+  }
+  return refreshing;
+}
+
+// Authenticated fetch: bearer header, one silent refresh + retry on 401.
+async function api(path: string, init: RequestInit = {}): Promise<Response> {
+  const go = () => {
+    const headers = new Headers(init.headers);
+    const t = loadTokens();
+    if (t) headers.set("Authorization", `Bearer ${t.access_token}`);
+    return fetch(`${API_URL}${path}`, { ...init, headers });
+  };
+  let r = await go();
+  if (r.status === 401 && (await refreshSession())) r = await go();
+  return r;
+}
+
+// SSE over fetch (EventSource can't send an Authorization header). Calls onOpen once the
+// stream is established; onEvent returns true to stop reading.
+async function streamEvents(
+  path: string,
+  onOpen: () => void,
+  onEvent: (e: TraceEvent) => boolean,
+): Promise<void> {
+  let opened = false;
+  try {
+    const r = await api(path, { headers: { Accept: "text/event-stream" } });
+    opened = true;
+    onOpen();
+    if (!r.ok || !r.body) return;
+    const reader = r.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+      let cut: number;
+      while ((cut = buf.indexOf("\n\n")) >= 0) {
+        const block = buf.slice(0, cut);
+        buf = buf.slice(cut + 2);
+        const data = block
+          .split("\n")
+          .filter((l) => l.startsWith("data:"))
+          .map((l) => l.slice(5).replace(/^ /, ""))
+          .join("\n");
+        if (data && onEvent(JSON.parse(data))) {
+          await reader.cancel();
+          return;
+        }
+      }
+    }
+  } finally {
+    if (!opened) onOpen();
+  }
+}
 
 type ConvSummary = {
   id: string;
@@ -166,11 +279,15 @@ const DEMO_ACCOUNTS = [
   },
 ];
 
-function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
+function Onboarding({ onDone }: { onDone: (c: CustomerSession) => void }) {
   const [name, setName] = useState("");
   const [contact, setContact] = useState("");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  // Existing account: the contact matched, so the customer must prove it with a login OTP.
+  const [challenge, setChallenge] = useState<{ id: string; sentTo: string } | null>(null);
+  const [code, setCode] = useState("");
+  const [otp, setOtp] = useState<string | null>(null); // DEMO_MODE simulated SMS
 
   async function authenticate(n: string, c: string) {
     setErr(null);
@@ -190,11 +307,47 @@ function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
           email: isEmail ? c.trim() : null,
         }),
       });
+      const body = await r.json();
       if (!r.ok) {
-        setErr((await r.json()).detail ?? "Could not verify you.");
+        setErr(body.detail ?? "Could not verify you.");
         return;
       }
-      onDone(await r.json());
+      if (body.status === "signed_in") {
+        onDone(body.session);
+        return;
+      }
+      setChallenge({ id: body.challenge_id, sentTo: body.sent_to });
+      setCode("");
+      if (body.test_otp) setOtp(body.test_otp);
+    } catch (e) {
+      setErr(String(e));
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function verify(value: string) {
+    if (!challenge || !value.trim()) return;
+    setErr(null);
+    setBusy(true);
+    try {
+      const r = await fetch(`${API_URL}/auth/login/verify`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ challenge_id: challenge.id, code: value.trim() }),
+      });
+      const body = await r.json();
+      if (!r.ok) {
+        const left = body.detail?.attempts_left;
+        setErr(
+          left
+            ? `That code didn't match. ${left} ${left === 1 ? "try" : "tries"} left.`
+            : "That code is no longer valid. Please start again.",
+        );
+        if (!left) setChallenge(null);
+        return;
+      }
+      onDone(body);
     } catch (e) {
       setErr(String(e));
     } finally {
@@ -213,40 +366,83 @@ function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
               Welcome to support. To get started, please verify your identity.
             </p>
           </div>
-          <form
-            onSubmit={(e) => {
-              e.preventDefault();
-              authenticate(name, contact);
-            }}
-            className="flex flex-col gap-3"
-          >
-            <label className="text-sm">
-              <span className="text-neutral-500">Your name</span>
-              <input
-                value={name}
-                onChange={(e) => setName(e.target.value)}
-                placeholder="e.g. Asha Verma"
-                className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
-              />
-            </label>
-            <label className="text-sm">
-              <span className="text-neutral-500">Registered mobile or email</span>
-              <input
-                value={contact}
-                onChange={(e) => setContact(e.target.value)}
-                placeholder="9876500001 or you@example.com"
-                className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
-              />
-            </label>
-            {err && <p className="text-sm text-red-500">{err}</p>}
-            <button
-              type="submit"
-              disabled={busy}
-              className="mt-2 rounded-xl bg-neutral-900 px-5 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+          {challenge ? (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                verify(code);
+              }}
+              className="flex flex-col gap-3"
             >
-              {busy ? "Verifying…" : "Continue"}
-            </button>
-          </form>
+              <p className="text-sm text-neutral-500">
+                This number or email is already registered. Enter the one-time code sent to{" "}
+                <span className="font-mono">{challenge.sentTo}</span>.
+              </p>
+              <input
+                value={code}
+                onChange={(e) => setCode(e.target.value)}
+                inputMode="numeric"
+                autoFocus
+                placeholder="6-digit code"
+                className="w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 tracking-widest dark:border-neutral-700"
+              />
+              {err && <p className="text-sm text-red-500">{err}</p>}
+              <div className="flex gap-2">
+                <button
+                  type="submit"
+                  disabled={busy || !code.trim()}
+                  className="rounded-xl bg-neutral-900 px-5 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+                >
+                  {busy ? "Verifying…" : "Verify"}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setChallenge(null);
+                    setErr(null);
+                  }}
+                  className="text-sm text-neutral-500 underline"
+                >
+                  Back
+                </button>
+              </div>
+            </form>
+          ) : (
+            <form
+              onSubmit={(e) => {
+                e.preventDefault();
+                authenticate(name, contact);
+              }}
+              className="flex flex-col gap-3"
+            >
+              <label className="text-sm">
+                <span className="text-neutral-500">Your name</span>
+                <input
+                  value={name}
+                  onChange={(e) => setName(e.target.value)}
+                  placeholder="e.g. Asha Verma"
+                  className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
+                />
+              </label>
+              <label className="text-sm">
+                <span className="text-neutral-500">Registered mobile or email</span>
+                <input
+                  value={contact}
+                  onChange={(e) => setContact(e.target.value)}
+                  placeholder="9876500001 or you@example.com"
+                  className="mt-1 w-full rounded-xl border border-neutral-300 bg-transparent px-4 py-2 dark:border-neutral-700"
+                />
+              </label>
+              {err && <p className="text-sm text-red-500">{err}</p>}
+              <button
+                type="submit"
+                disabled={busy}
+                className="mt-2 rounded-xl bg-neutral-900 px-5 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
+              >
+                {busy ? "Verifying…" : "Continue"}
+              </button>
+            </form>
+          )}
           <p className="rounded-lg bg-neutral-100 p-3 text-xs leading-relaxed text-neutral-500 dark:bg-neutral-900">
             <span className="font-medium text-neutral-600 dark:text-neutral-300">
               Note —
@@ -267,8 +463,8 @@ function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
             </span>
           </div>
           <p className="mb-3 text-xs text-neutral-500">
-            Tap to sign in — each has document-level policy &amp; claim data for grounded,
-            multilingual answers.
+            Tap to sign in (you&apos;ll get a demo OTP) — each has document-level policy &amp;
+            claim data for grounded, multilingual answers.
           </p>
           <div className="flex flex-col gap-2">
             {DEMO_ACCOUNTS.map((a) => (
@@ -301,6 +497,17 @@ function Onboarding({ onDone }: { onDone: (c: Customer) => void }) {
           </p>
         </div>
       </div>
+      {otp && (
+        <OtpToast
+          code={otp}
+          onUse={() => {
+            setCode(otp);
+            setOtp(null);
+            verify(otp);
+          }}
+          onClose={() => setOtp(null)}
+        />
+      )}
     </main>
   );
 }
@@ -335,16 +542,51 @@ export default function App() {
   // suspended run (/reply), not start a fresh one (/messages) — otherwise context is lost.
   const suspendedRef = useRef(false);
 
-  async function refreshConvos(uid: string) {
+  // Restore a session across reloads: rotate the stored refresh token, then load the profile.
+  // History is keyed by customer, so a restored (or re-authenticated) session sees it all.
+  useEffect(() => {
+    (async () => {
+      if (!loadTokens() || !(await refreshSession())) return;
+      const r = await api("/me");
+      if (!r.ok) return;
+      const p = await r.json();
+      start({ ...p, returning: true }, false);
+    })();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  function signOut() {
+    const t = loadTokens();
+    if (t)
+      fetch(`${API_URL}/auth/logout`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ refresh_token: t.refresh_token }),
+      }).catch(() => {});
+    saveTokens(null);
+    setCustomer(null);
+    convoRef.current = null;
+    suspendedRef.current = false;
+    setTurns([]);
+    setConvos([]);
+  }
+
+  async function refreshConvos() {
     try {
-      const r = await fetch(`${API_URL}/users/${uid}/conversations`);
+      const r = await api("/me/conversations");
+      if (r.status === 401) return signOut(); // refresh failed too: session is gone
       if (r.ok) setConvos(await r.json());
     } catch {
       /* ignore */
     }
   }
 
-  function start(c: Customer) {
+  function signedIn(s: CustomerSession) {
+    saveTokens(s.tokens);
+    start(s, true);
+  }
+
+  function start(c: Customer, greet: boolean) {
     setCustomer(c);
     convoRef.current = null;
     suspendedRef.current = false;
@@ -353,8 +595,8 @@ export default function App() {
       : `Hi ${c.name}, you're verified. I've set up your account` +
         (c.policy_id ? ` (policy ${c.policy_id}, claim ${c.claim_id})` : "") +
         `. How can I help?`;
-    setTurns([{ role: "assistant", text: intro, status: "resolved" }]);
-    refreshConvos(c.user_id);
+    setTurns(greet ? [{ role: "assistant", text: intro, status: "resolved" }] : []);
+    refreshConvos();
   }
 
   function newChat() {
@@ -370,7 +612,7 @@ export default function App() {
     suspendedRef.current = !!s.suspend_status;
     setOtp(null);
     try {
-      const r = await fetch(`${API_URL}/conversations/${s.id}`);
+      const r = await api(`/conversations/${s.id}`);
       const msgs: { role: string; content: string }[] = r.ok ? await r.json() : [];
       setTurns(
         msgs.map((m) => ({ role: m.role === "user" ? "user" : "assistant", text: m.content })),
@@ -382,11 +624,8 @@ export default function App() {
 
   async function ensureConversation(): Promise<string> {
     if (convoRef.current) return convoRef.current;
-    const r = await fetch(`${API_URL}/conversations`, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ user_id: customer!.user_id }),
-    });
+    const r = await api("/conversations", { method: "POST" });
+    if (!r.ok) throw new Error(r.status === 401 ? "session expired" : "could not start chat");
     convoRef.current = (await r.json()).id;
     return convoRef.current!;
   }
@@ -399,62 +638,54 @@ export default function App() {
     setInput("");
     try {
       const cid = await ensureConversation();
-      const es = new EventSource(`${API_URL}/conversations/${cid}/stream`);
-      await new Promise<void>((resolve) => {
-        es.onopen = () => resolve();
+      let markOpen: () => void = () => {};
+      const opened = new Promise<void>((resolve) => {
+        markOpen = resolve;
         setTimeout(resolve, 1000);
       });
-      const done = new Promise<void>((resolve) => {
-        es.onmessage = (ev) => {
-          const e: TraceEvent & { type: string } = JSON.parse(ev.data);
-          if (e.type === "otp") {
-            setOtp(String(e.data.code ?? ""));
-            return; // OTP is delivered via the popup, not added to the chat trace/text
+      const done = streamEvents(`/conversations/${cid}/stream`, markOpen, (e) => {
+        if (e.type === "otp") {
+          setOtp(String(e.data.code ?? ""));
+          return false; // OTP is delivered via the popup, not added to the chat trace/text
+        }
+        setTurns((t) => {
+          const copy = [...t];
+          const a = { ...copy[copy.length - 1] };
+          a.trace = [...(a.trace ?? []), e];
+          if (e.type === "final") {
+            const resp = (e.data.response as Record<string, unknown>) ?? {};
+            a.text = (resp.message as string) ?? "(no response)";
+            a.status = e.data.status as string;
+            a.route = e.data.route as string;
+            a.language = e.data.language as string;
+            a.citations = (resp.citations as string[]) ?? [];
+            a.actions = (resp.actions_taken as string[]) ?? [];
+            // Track suspension so the NEXT message resumes the run instead of starting fresh.
+            suspendedRef.current =
+              a.status === "awaiting_input" || a.status === "awaiting_confirmation";
           }
-          setTurns((t) => {
-            const copy = [...t];
-            const a = { ...copy[copy.length - 1] };
-            a.trace = [...(a.trace ?? []), e];
-            if (e.type === "final") {
-              const resp = (e.data.response as Record<string, unknown>) ?? {};
-              a.text = (resp.message as string) ?? "(no response)";
-              a.status = e.data.status as string;
-              a.route = e.data.route as string;
-              a.language = e.data.language as string;
-              a.citations = (resp.citations as string[]) ?? [];
-              a.actions = (resp.actions_taken as string[]) ?? [];
-              // Track suspension so the NEXT message resumes the run instead of starting fresh.
-              suspendedRef.current =
-                a.status === "awaiting_input" || a.status === "awaiting_confirmation";
-            }
-            copy[copy.length - 1] = a;
-            return copy;
-          });
-          if (e.type === "run_finished") {
-            es.close();
-            resolve();
-          }
-        };
-        es.onerror = () => {
-          es.close();
-          resolve();
-        };
+          copy[copy.length - 1] = a;
+          return copy;
+        });
+        return e.type === "run_finished";
       });
+      await opened;
       // Resume a suspended run via /reply; otherwise start a new run via /messages.
       const endpoint = resuming ? "reply" : "messages";
-      await fetch(`${API_URL}/conversations/${cid}/${endpoint}`, {
+      const posted = await api(`/conversations/${cid}/${endpoint}`, {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ content: text }),
       });
+      if (posted.status === 401) return signOut();
       await done;
-      refreshConvos(customer!.user_id);
+      refreshConvos();
     } finally {
       setBusy(false);
     }
   }
 
-  if (!customer) return <Onboarding onDone={start} />;
+  if (!customer) return <Onboarding onDone={signedIn} />;
 
   const statusColor = (s?: string) =>
     s === "resolved"
@@ -528,15 +759,8 @@ export default function App() {
               Eval dashboard
             </a>
           )}
-          <button
-            onClick={() => {
-              setCustomer(null);
-              convoRef.current = null;
-              setTurns([]);
-            }}
-            className="underline"
-          >
-            Switch user
+          <button onClick={signOut} className="underline">
+            Sign out
           </button>
         </div>
       </header>

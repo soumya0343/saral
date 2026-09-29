@@ -4,8 +4,9 @@ from __future__ import annotations
 
 import asyncio
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 
+from saral.api.deps import require_service_key
 from saral.config import get_settings
 from saral.eval import store
 from saral.eval.runner import run_eval
@@ -14,7 +15,15 @@ from saral.eval.schemas import EvalReport
 router = APIRouter(prefix="/eval", tags=["eval"])
 
 
-@router.post("/run", response_model=EvalReport)
+def _eval_trigger_allowed(x_service_key: str | None = Header(default=None)) -> None:
+    """Running the suite spends free-tier LLM quota, so it is not a public endpoint: in prod it
+    needs the service key (or use `make eval`); in dev/test it is open for convenience."""
+    if get_settings().app_env != "prod":
+        return
+    require_service_key(x_service_key)
+
+
+@router.post("/run", response_model=EvalReport, dependencies=[Depends(_eval_trigger_allowed)])
 async def run() -> EvalReport:
     return await run_eval()
 

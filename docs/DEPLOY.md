@@ -16,7 +16,8 @@ Only the datastore URLs and `SESSION_SECRET` must be set in production.
 |---|---|---|
 | `DATABASE_URL` | `postgresql+asyncpg://<user>:<pass>@<host>:5432/saral` | `fly postgres attach` / Render managed PG `connectionString` |
 | `REDIS_URL` | `redis://...` or `rediss://...` (TLS) | Upstash (Fly) / Render managed Redis |
-| `SESSION_SECRET` | ≥32-byte HMAC key for signing session tokens (the mock IdP) | generate: `openssl rand -hex 32` |
+| `SESSION_SECRET` | ≥32-byte HMAC key for signing session tokens (the mock IdP). **Boot fails in prod if unset/default.** | generate: `openssl rand -hex 32` |
+| `FRONTEND_ORIGINS` | CORS allow-list: the deployed frontend origin(s), comma-separated | e.g. `https://saral.vercel.app` |
 
 ### Optional (app falls back to the stub LLM)
 
@@ -28,7 +29,10 @@ Only the datastore URLs and `SESSION_SECRET` must be set in production.
 | `STORE_BACKEND` / `CHECKPOINT_BACKEND` | `memory` | set `postgres` in prod for durability + cross-process resume |
 | `SESSION_TTL_MIN` | `30` | session token TTL |
 | `STEP_UP_TTL_S` | `300` | OTP challenge validity |
-| `EXPOSE_TEST_OTP` | `true` | surface the OTP in responses (auto-off when `APP_ENV=prod`) |
+| `SERVICE_API_KEY` | unset | server-to-server key for the RM's system (`/escalations/{id}/resolve`) and `POST /eval/run` in prod; unset disables both |
+| `CLIENT_IP_HEADER` | unset | header with the real client IP for rate limits (`Fly-Client-IP` on Fly) |
+| `DEMO_MODE` | `false` | no SMS channel: show the OTP as a simulated SMS popup (set `true` for the public demo) |
+| `OTP_MAX_ATTEMPTS` | `5` | wrong OTP guesses before a challenge is burned |
 
 ## Fly.io
 
@@ -68,19 +72,21 @@ cd frontend && npx vercel deploy --prod
 BASE=https://saral.fly.dev
 curl -s $BASE/health | jq .
 
-# Mock IdP: mint a session token (identity is token-derived thereafter)
-TOK=$(curl -s -X POST $BASE/auth/session -H 'Content-Type: application/json' \
-  -d '{"user_id":"U1001"}' | jq -r .token)
+# Sign in as a seeded customer: existing accounts need the login OTP (DEMO_MODE returns it)
+CH=$(curl -s -X POST $BASE/customers -H 'Content-Type: application/json' \
+  -d '{"name":"Asha Verma","mobile":"9876500001"}')
+TOK=$(curl -s -X POST $BASE/auth/login/verify -H 'Content-Type: application/json' \
+  -d "{\"challenge_id\":\"$(echo $CH | jq -r .challenge_id)\",\"code\":\"$(echo $CH | jq -r .test_otp)\"}" \
+  | jq -r .tokens.access_token)
+AUTH="Authorization: Bearer $TOK"
 
-# Start a conversation, send a Hindi explanation query, stream the trace + grounded answer
-CONV=$(curl -s -X POST $BASE/conversations -H 'Content-Type: application/json' \
-  -d '{"user_id":"U1001"}' | jq -r .id)
-curl -s -X POST $BASE/conversations/$CONV/messages -H 'Content-Type: application/json' \
+# Start a conversation, stream the trace, send a question (identity comes from the token)
+CONV=$(curl -s -X POST $BASE/conversations -H "$AUTH" | jq -r .id)
+curl -sN $BASE/conversations/$CONV/stream -H "$AUTH" &
+curl -s -X POST $BASE/conversations/$CONV/messages -H "$AUTH" -H 'Content-Type: application/json' \
   -d '{"content":"Why was my claim CLM2010 partially reduced?"}'
-curl -sN $BASE/conversations/$CONV/stream
 
-# Eval suite
-curl -s -X POST $BASE/eval/run | jq '.summary'
+# Eval suite: run it with `make eval` (POST /eval/run needs X-Service-Key in prod)
 ```
 
 ## Notes
@@ -91,5 +97,6 @@ curl -s -X POST $BASE/eval/run | jq '.summary'
 - **SSE**: `fly.toml` sets `X-Accel-Buffering: no` so stream chunks are not buffered.
 - **Worker scaling**: the worker consumes a Redis Streams consumer group; add machines to scale
   horizontally — no config change.
-- **Step-up OTP**: there is no SMS channel; in non-prod the OTP is returned in the response
-  (`test_otp`). `APP_ENV=prod` disables that surface.
+- **Step-up OTP**: there is no SMS channel; with `DEMO_MODE=true` the OTP is returned as
+  `test_otp` and shown as a simulated SMS popup. With `DEMO_MODE=false` it is never surfaced, and
+  writes need a real delivery channel.

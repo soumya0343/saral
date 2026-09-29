@@ -56,7 +56,8 @@ class ComplianceGate:
         # 3) Authorization — per state-affecting / data-exposing action.
         action_intents = [i for i in intents if i.type == IntentType.ACTION and i.action]
         for intent in action_intents:
-            allowed, why = check_authorization(user_id, intent.action, entities)
+            action = intent.action or ""  # non-empty: filtered above
+            allowed, why = check_authorization(user_id, action, entities)
             decisions.append(
                 ComplianceDecision(
                     decision="allow" if allowed else "block",

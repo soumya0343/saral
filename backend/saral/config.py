@@ -9,8 +9,10 @@ from __future__ import annotations
 from functools import lru_cache
 from typing import Literal
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_DEV_SESSION_SECRET = "dev-insecure-change-me-0000000000000000"
 
 
 class Settings(BaseSettings):
@@ -92,12 +94,29 @@ class Settings(BaseSettings):
 
     # --- Identity & Auth ---
     # Mock IdP signing secret (HS256). Dev default is insecure on purpose; set in prod.
-    session_secret: str = "dev-insecure-change-me-0000000000000000"  # >=32 bytes (HS256)
-    session_ttl_min: int = 30  # short-TTL session token
+    session_secret: str = _DEV_SESSION_SECRET  # >=32 bytes (HS256); refused in prod
+    session_ttl_min: int = 30  # short-TTL access token; the client refreshes it silently
+    refresh_ttl_days: int = 14  # rotating refresh token (mock IdP); re-login after this
+    # Step-up is a server-side grant bound to ONE pending write (its idempotency key), not a
+    # long-lived token: it expires after this and is consumed when the write is acted on.
+    step_up_grant_ttl_s: int = 300
     step_up_ttl_s: int = 300  # OTP challenge validity window
     default_tenant: str = "t_demo"  # single hardcoded tenant (multi-tenant-ready schema)
-    # Expose the generated OTP in API responses (non-prod only) since there is no SMS channel.
-    expose_test_otp: bool = True
+    # DEMO_MODE: there is no SMS channel, so the generated OTP is shown to the customer as a
+    # simulated SMS popup (labelled "demo" in the UI). Off -> the code is never surfaced.
+    demo_mode: bool = False
+    otp_max_attempts: int = 5  # wrong guesses before a challenge is burned
+    # Server-to-server key for the RM's system (request status updates) and ops calls such as
+    # triggering an eval over HTTP. Unset -> those endpoints are disabled. No UI uses it.
+    service_api_key: str | None = None
+
+    # --- API edge ---
+    # Browser origins allowed by CORS (comma-separated). Set to the deployed frontend in prod.
+    frontend_origins: str = "http://localhost:3000"
+    # Fixed-window rate limits (Redis). Fail-open if Redis is unreachable (logged).
+    rate_limit_enabled: bool = True
+    # Header carrying the real client IP behind a proxy (Fly: "Fly-Client-IP"); unset -> socket.
+    client_ip_header: str | None = None
 
     # --- Compliance ---
     pii_backend: Literal["regex", "presidio"] = "regex"
@@ -130,6 +149,20 @@ class Settings(BaseSettings):
     # dedup window is tied to the same TTL (keys are purged together).
     pending_write_ttl_s: int = 86400  # 24h
     orphan_ttl_s: int = 86400  # suspended-conversation reaper horizon
+
+    @model_validator(mode="after")
+    def _refuse_insecure_prod(self) -> Settings:
+        # The mock IdP signs every session with this secret: a known default in prod would let
+        # anyone forge a token for any customer. Fail fast instead of booting insecurely.
+        if self.app_env == "prod" and (
+            self.session_secret == _DEV_SESSION_SECRET or len(self.session_secret) < 32
+        ):
+            raise ValueError("SESSION_SECRET must be set to a random >=32-byte value in prod")
+        return self
+
+    @property
+    def cors_origins(self) -> list[str]:
+        return [o.strip() for o in self.frontend_origins.split(",") if o.strip()]
 
     @property
     def provider_chain(self) -> list[str]:

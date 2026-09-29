@@ -146,17 +146,23 @@ make dev    # API + worker in ONE process (shared mock state) — for frontend d
 
 | Method | Path | Purpose |
 |---|---|---|
-| `POST` | `/auth/session` | mock IdP: mint a session token (identity is token-derived) |
-| `POST` | `/auth/step-up` | request + verify a step-up OTP challenge |
-| `POST` | `/customers` | create a customer |
-| `POST` | `/conversations` | start a conversation (mints a session token) |
+| `POST` | `/customers` | sign up (new → signed in) or start login (existing → login OTP required) |
+| `POST` | `/auth/login/verify` | existing customer: exchange the login OTP for tokens |
+| `POST` | `/auth/refresh`, `/auth/logout` | rotate / revoke the refresh token (silent re-auth; history kept) |
+| `GET`  | `/me`, `/me/conversations` | signed-in customer's profile and conversation history |
+| `POST` | `/conversations` | start a conversation for the token's customer |
 | `POST` | `/conversations/{id}/messages` | send a message (enqueues a run) |
-| `POST` | `/conversations/{id}/reply` | resume a suspended run (OTP / yes-no), re-validates identity |
+| `POST` | `/conversations/{id}/reply` | resume a suspended run (OTP / yes-no); OTP grants step-up for that one write |
 | `GET`  | `/conversations/{id}/stream` | SSE: live agent trace + final response |
 | `GET`  | `/conversations/{id}` | full message history |
-| `POST` | `/escalations/{id}/resolve` | operator audit: record who handled it + when |
-| `DELETE` | `/users/{id}/data` | right-to-erasure: tombstone PII, audit chain left intact |
-| `POST` | `/eval/run`, `GET /eval/report`, `GET /eval/reports` | run + inspect evals |
+| `DELETE` | `/me/data` | self-service right-to-erasure: tombstone PII, sign out; audit chain left intact |
+| `POST` | `/escalations/{id}/resolve` | server-to-server (`X-Service-Key`): the RM's system records who handled a request |
+| `POST` | `/auth/step-up` | standalone step-up harness |
+| `POST` | `/auth/session` | dev/test only: mint a token for a user id (disabled in prod) |
+| `POST` | `/eval/run`, `GET /eval/report`, `GET /eval/reports` | run (dev, or `X-Service-Key` in prod) + inspect evals |
+
+Every customer route needs `Authorization: Bearer <access_token>` and only sees the token's own
+conversations. `DEMO_MODE=true` shows OTPs as a simulated SMS popup (there is no SMS channel).
 
 Interactive docs at `localhost:8000/docs`.
 

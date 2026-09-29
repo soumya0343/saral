@@ -21,6 +21,9 @@ primary_region = "bom"   # Mumbai — Sarvam proximity + DPDP data residency
 
 [env]
   APP_ENV            = "prod"
+  DEMO_MODE          = "true"   # no SMS channel: OTP shown as a labelled simulated SMS
+  CLIENT_IP_HEADER   = "Fly-Client-IP"  # real client IP for rate limits
+  # FRONTEND_ORIGINS must be set to the deployed frontend (e.g. https://saral.vercel.app)
   LOG_LEVEL          = "INFO"
   LOG_JSON           = "true"
   STORE_BACKEND      = "postgres"

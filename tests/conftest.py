@@ -24,3 +24,11 @@ os.environ["STORE_BACKEND"] = "memory"
 # Hashing floor: deterministic + dependency-free, so eval/tests are reproducible and don't
 # pull the multilingual-e5 weights (ADR-0003: hashing is the offline/CI floor).
 os.environ["EMBEDDER"] = "hashing"
+# No SMS channel in tests: surface the OTP so step-up flows run end-to-end.
+os.environ["DEMO_MODE"] = "true"
+# Rate limits need Redis; unit/API tests exercise them explicitly (test_ratelimit.py).
+os.environ["RATE_LIMIT_ENABLED"] = "false"
+# API integration tests (tests/test_api_auth.py) need a real, migrated Postgres. They run only
+# when SARAL_TEST_DATABASE_URL is set (CI provides one; locally: any throwaway database).
+if os.environ.get("SARAL_TEST_DATABASE_URL"):
+    os.environ["DATABASE_URL"] = os.environ["SARAL_TEST_DATABASE_URL"]

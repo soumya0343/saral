@@ -1,28 +1,92 @@
-"""Mock IdP + step-up endpoints.
+"""Mock IdP endpoints: login OTP, token refresh/logout, and the step-up harness.
 
-`/auth/session` mints a short-TTL session token (the host app's job; simulated here). The
-token is the ONLY source of identity downstream. `/auth/step-up` runs the OTP challenge: a
-request mints a code (returned as `test_otp` in non-prod — no SMS), a verify raises the token
-to `step_up`.
+These simulate the host bank/insurer app's auth (ADR-0001) — labelled as a harness, not a
+production IdP. The client holds a short access token + a rotating refresh token; identity
+downstream comes ONLY from the access token.
+
+- `POST /auth/login/verify`: an existing customer proves the account with the login OTP.
+- `POST /auth/refresh`: rotate the refresh token for a new pair (silent re-auth; history kept).
+- `POST /auth/logout`: revoke the refresh-token family.
+- `POST /auth/session`: dev/test-only shortcut that mints a token for a user id.
+- `POST /auth/step-up`: standalone step-up harness (the chat flow uses `/reply` instead).
 """
 
 from __future__ import annotations
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
+from saral.api.deps import current_customer
+from saral.api.ratelimit import per_customer, per_ip
+from saral.api.routes import CustomerSession
 from saral.auth import (
+    SessionClaims,
     decode_token,
     mint_session_token,
-    raise_auth_level,
     request_step_up,
     verify_step_up,
 )
-from saral.auth.tokens import AuthError
+from saral.auth.sessions import TokenPair, issue_tokens, refresh_tokens
+from saral.auth.stepup import attempts_left
+from saral.config import get_settings
 from saral.schemas import AuthLevel
 from saral.tools import mock_backend as mb
+from saral.tools.store import get_store
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+class LoginVerify(BaseModel):
+    challenge_id: str
+    code: str
+
+
+@router.post(
+    "/login/verify",
+    response_model=CustomerSession,
+    dependencies=[per_ip("login_verify", limit=10)],
+)
+async def login_verify(body: LoginVerify) -> CustomerSession:
+    """Existing customer: exchange the login OTP for a session. The challenge alone decides
+    whose account this is — the request can't name a user."""
+    user_id = get_store().challenge_owner(body.challenge_id, purpose="login")
+    if user_id is None or not verify_step_up(
+        body.challenge_id, body.code, user_id, purpose="login"
+    ):
+        left = attempts_left(body.challenge_id) if user_id else 0
+        raise HTTPException(
+            status_code=401,
+            detail={"error": "invalid or expired code", "attempts_left": left},
+        )
+    profile = mb.get_customer(user_id) or {"name": user_id}
+    ctx = mb.get_customer_context(user_id)
+    return CustomerSession(
+        user_id=user_id,
+        name=profile["name"],
+        returning=True,
+        policy_id=ctx.get("policy_id"),
+        claim_id=ctx.get("claim_id"),
+        tokens=issue_tokens(user_id),
+    )
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str
+
+
+@router.post(
+    "/refresh", response_model=TokenPair, dependencies=[per_ip("refresh", limit=30)]
+)
+async def refresh(body: RefreshRequest) -> TokenPair:
+    try:
+        return refresh_tokens(body.refresh_token)
+    except mb.ToolError as e:
+        raise HTTPException(status_code=401, detail=str(e)) from e
+
+
+@router.post("/logout", status_code=204)
+async def logout(body: RefreshRequest) -> None:
+    get_store().revoke_refresh(body.refresh_token)
 
 
 class SessionRequest(BaseModel):
@@ -38,7 +102,10 @@ class SessionToken(BaseModel):
 
 @router.post("/session", response_model=SessionToken)
 async def mint_session(body: SessionRequest) -> SessionToken:
-    """Mint a session token for a known customer (the mock IdP)."""
+    """DEV/TEST ONLY: mint a token for a known customer without proof (smoke tests, scripts).
+    Disabled when APP_ENV=prod — there, sessions come only from sign-up or the login OTP."""
+    if get_settings().app_env == "prod":
+        raise HTTPException(status_code=404, detail="not found")
     if not mb.user_exists(body.user_id):
         raise HTTPException(status_code=404, detail=f"customer {body.user_id} not found")
     token = mint_session_token(body.user_id)
@@ -52,7 +119,6 @@ async def mint_session(body: SessionRequest) -> SessionToken:
 
 
 class StepUpRequest(BaseModel):
-    token: str  # the current session token (identity is token-derived, never from the body)
     # On a verify call, supply both:
     challenge_id: str | None = None
     response: str | None = None
@@ -61,28 +127,38 @@ class StepUpRequest(BaseModel):
 class StepUpResult(BaseModel):
     mode: str  # "requested" | "verified" | "failed"
     challenge_id: str | None = None
-    test_otp: str | None = None  # non-prod only
-    token: str | None = None  # a re-minted step_up token on success
+    test_otp: str | None = None  # DEMO_MODE only
+    token: str | None = None  # a short-lived step_up token on success
     auth_level: str | None = None
+    attempts_left: int | None = None
 
 
-@router.post("/step-up", response_model=StepUpResult)
-async def step_up(body: StepUpRequest) -> StepUpResult:
-    try:
-        claims = decode_token(body.token)
-    except AuthError as e:
-        raise HTTPException(status_code=401, detail=str(e)) from e
-
-    # Verify mode: a challenge_id + response are present.
+@router.post(
+    "/step-up",
+    response_model=StepUpResult,
+    dependencies=[per_customer("step_up", limit=10)],
+)
+async def step_up(
+    body: StepUpRequest, claims: SessionClaims = Depends(current_customer)
+) -> StepUpResult:
+    """Standalone step-up harness. The chat flow does NOT honour client step-up tokens — it
+    grants step-up server-side, bound to one pending write (see /conversations/{id}/reply)."""
     if body.challenge_id and body.response is not None:
         if verify_step_up(body.challenge_id, body.response, claims.user_id):
-            new_token = raise_auth_level(body.token, AuthLevel.STEP_UP)
-            return StepUpResult(
-                mode="verified", token=new_token, auth_level=str(AuthLevel.STEP_UP)
+            ttl_min = max(get_settings().step_up_grant_ttl_s // 60, 1)
+            token = mint_session_token(
+                claims.user_id,
+                tenant_id=claims.tenant_id,
+                auth_level=AuthLevel.STEP_UP,
+                ttl_min=ttl_min,
             )
-        return StepUpResult(mode="failed", auth_level=str(claims.auth_level))
+            return StepUpResult(mode="verified", token=token, auth_level=str(AuthLevel.STEP_UP))
+        return StepUpResult(
+            mode="failed",
+            auth_level=str(claims.auth_level),
+            attempts_left=attempts_left(body.challenge_id),
+        )
 
-    # Request mode: mint a fresh challenge.
     chal = request_step_up(claims.user_id)
     return StepUpResult(
         mode="requested", challenge_id=chal["challenge_id"], test_otp=chal.get("test_otp")

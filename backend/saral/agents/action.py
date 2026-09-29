@@ -79,6 +79,7 @@ class ActionAgent:
         idem = None
 
         # Resolve arguments / required-arg checks.
+        call: Callable[[], Any]
         if action == "get_claim_status":
             claim_id = entities.get("claim_id")
             if not claim_id:

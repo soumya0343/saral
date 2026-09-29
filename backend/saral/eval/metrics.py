@@ -20,6 +20,7 @@ def actual_outcome(state: RunState) -> dict:
     resp = state.final_response
     # A suspended run reports its lifecycle status (awaiting_*); otherwise the customer-facing
     # resolution_status (resolved/escalated/blocked) is the outcome label.
+    status: str
     if state.status in ("awaiting_input", "awaiting_confirmation"):
         status = state.status
     else:

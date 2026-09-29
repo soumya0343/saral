@@ -34,11 +34,22 @@ def trace_channel(conversation_id: str) -> str:
     return f"trace:{conversation_id}"
 
 
+# The payload carries the raw message, so the stream must not grow (or retain) forever: cap it
+# approximately, and workers XDEL each entry once it is acked (see worker/main.py).
+RUN_STREAM_MAXLEN = 10_000
+
+
 async def enqueue_run(req: RunRequest) -> str:
     """XADD a run request; returns the stream entry id."""
     r = get_redis()
     settings = get_settings()
-    return await r.xadd(settings.run_stream, {"payload": req.model_dump_json()})
+    entry_id = await r.xadd(
+        settings.run_stream,
+        {"payload": req.model_dump_json()},
+        maxlen=RUN_STREAM_MAXLEN,
+        approximate=True,
+    )
+    return str(entry_id)
 
 
 async def ensure_group() -> None:

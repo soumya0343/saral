@@ -1,14 +1,17 @@
-"""Conversation + message + resume + SSE stream routes.
+"""Customer, conversation, message, resume and SSE stream routes.
 
-Identity is token-derived: the conversation holds a session token (mock-IdP
-custody for the demo) that is re-validated on every message and every resume. A write
-suspends the run; `/reply` resumes it — re-validating identity and, if the session expired
-during suspension, re-earning step-up before the write fires.
+Identity is token-derived: every customer route reads the customer from the bearer access
+token (`api.deps.current_customer`) and only ever touches conversations that customer owns.
+Nothing in a path or body can name another customer. A write suspends the run; `/reply`
+resumes it. Step-up is a short server-side grant bound to the pending write's idempotency key,
+so a verified OTP authorizes that one write only, and only briefly.
 """
 
 from __future__ import annotations
 
 import uuid
+from datetime import UTC, datetime, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,8 +20,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
 from saral.actions.resume import interpret_resume
-from saral.auth import decode_token, mint_session_token, verify_step_up
-from saral.auth.tokens import AuthError
+from saral.api.deps import current_customer, owned_conversation, require_service_key
+from saral.api.ratelimit import per_customer, per_ip
+from saral.auth import SessionClaims, request_step_up, verify_step_up
+from saral.auth.sessions import TokenPair, issue_tokens
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.db.models import Conversation, Message
@@ -30,31 +35,105 @@ from saral.tools import mock_backend as mb
 router = APIRouter()
 
 
+# --- customers (sign-up / login) -------------------------------------------------------------
+
+
 class IdentifyCustomer(BaseModel):
     name: str
     mobile: str | None = None
     email: str | None = None
 
 
-class CustomerOut(BaseModel):
+class CustomerSession(BaseModel):
+    """A signed-in customer: profile + the client-held token pair."""
+
     user_id: str
     name: str
     returning: bool
     policy_id: str | None = None
     claim_id: str | None = None
+    tokens: TokenPair
 
 
-class StartConversation(BaseModel):
-    user_id: str
+class IdentifyOut(BaseModel):
+    status: Literal["signed_in", "otp_required"]
+    # signed_in: a NEW sandbox customer was created and is signed in straight away.
+    session: CustomerSession | None = None
+    # otp_required: the contact belongs to an EXISTING account — prove it with a login OTP
+    # (POST /auth/login/verify). Knowing a phone number alone never opens an account.
+    challenge_id: str | None = None
+    sent_to: str | None = None  # masked contact the code was "sent" to
+    test_otp: str | None = None  # DEMO_MODE only (simulated SMS)
 
 
-@router.post("/customers", response_model=CustomerOut, tags=["customers"])
-async def identify_customer(body: IdentifyCustomer) -> CustomerOut:
+def _mask(mobile: str | None, email: str | None) -> str:
+    if mobile:
+        return "*" * max(len(mobile) - 4, 0) + mobile[-4:]
+    if email and "@" in email:
+        local, _, domain = email.partition("@")
+        return f"{local[:1]}***@{domain}"
+    return "your registered contact"
+
+
+@router.post(
+    "/customers",
+    response_model=IdentifyOut,
+    tags=["customers"],
+    dependencies=[per_ip("identify", limit=10)],
+)
+async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
+    if not body.name.strip() or not (body.mobile or body.email):
+        raise HTTPException(
+            status_code=400, detail="name and a mobile number or email are required"
+        )
+    existing = mb.find_customer(body.mobile, body.email)
+    if existing is not None:
+        chal = request_step_up(existing["user_id"], purpose="login")
+        return IdentifyOut(
+            status="otp_required",
+            challenge_id=chal["challenge_id"],
+            sent_to=_mask(existing.get("mobile"), existing.get("email")),
+            test_otp=chal.get("test_otp"),
+        )
     try:
-        result = mb.identify_customer(body.name, body.mobile, body.email)
+        created = mb.identify_customer(body.name, body.mobile, body.email)
     except mb.ToolError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
-    return CustomerOut(**result)
+    return IdentifyOut(
+        status="signed_in",
+        session=CustomerSession(
+            user_id=created["user_id"],
+            name=created["name"],
+            returning=False,
+            policy_id=created.get("policy_id"),
+            claim_id=created.get("claim_id"),
+            tokens=issue_tokens(created["user_id"]),
+        ),
+    )
+
+
+class CustomerProfile(BaseModel):
+    user_id: str
+    name: str
+    policy_id: str | None = None
+    claim_id: str | None = None
+
+
+@router.get("/me", response_model=CustomerProfile, tags=["customers"])
+async def me(claims: SessionClaims = Depends(current_customer)) -> CustomerProfile:
+    profile = mb.get_customer(claims.user_id)
+    if profile is None:
+        raise HTTPException(status_code=404, detail="customer not found")
+    ctx = mb.get_customer_context(claims.user_id)
+    return CustomerProfile(
+        user_id=claims.user_id,
+        name=profile["name"],
+        policy_id=ctx.get("policy_id"),
+        claim_id=ctx.get("claim_id"),
+    )
+
+
+# --- conversations ---------------------------------------------------------------------------
 
 
 class ConversationOut(BaseModel):
@@ -62,7 +141,6 @@ class ConversationOut(BaseModel):
     user_id: str
     status: str
     language: str | None = None
-    token: str | None = None  # session token minted for this conversation (mock IdP)
 
 
 class SendMessage(BaseModel):
@@ -91,18 +169,23 @@ class ConversationSummary(BaseModel):
 
 
 @router.get(
-    "/users/{user_id}/conversations",
+    "/me/conversations",
     response_model=list[ConversationSummary],
     tags=["conversations"],
 )
 async def list_conversations(
-    user_id: str, db: AsyncSession = Depends(get_session)
+    claims: SessionClaims = Depends(current_customer),
+    db: AsyncSession = Depends(get_session),
 ) -> list[ConversationSummary]:
-    """Past conversations for a customer (most-recent first) — powers the sidebar history."""
+    """The signed-in customer's past conversations (most-recent first) — the sidebar history.
+    History is keyed by customer, not by token: a new session sees every past conversation."""
     convos = (
         await db.scalars(
             select(Conversation)
-            .where(Conversation.user_id == user_id)
+            .where(
+                Conversation.user_id == claims.user_id,
+                Conversation.tenant_id == claims.tenant_id,
+            )
             .order_by(Conversation.updated_at.desc())
             .limit(50)
         )
@@ -129,36 +212,13 @@ async def list_conversations(
 
 @router.post("/conversations", response_model=ConversationOut, tags=["conversations"])
 async def start_conversation(
-    body: StartConversation, db: AsyncSession = Depends(get_session)
+    claims: SessionClaims = Depends(current_customer),
+    db: AsyncSession = Depends(get_session),
 ) -> ConversationOut:
-    # Mint a session token for this customer (the host app's job; simulated here).
-    token = mint_session_token(body.user_id)
-    claims = decode_token(token)
-    convo = Conversation(
-        user_id=claims.user_id, tenant_id=claims.tenant_id, session_token=token
-    )
+    convo = Conversation(user_id=claims.user_id, tenant_id=claims.tenant_id)
     db.add(convo)
     await db.flush()
-    return ConversationOut(
-        id=convo.id, user_id=convo.user_id, status=convo.status, token=token
-    )
-
-
-def _claims_or_refresh(convo: Conversation) -> tuple[str, str, AuthLevel, str]:
-    """Re-validate the conversation token. On expiry, re-mint a SESSION token —
-    a write that suspended at step_up will then re-earn step-up on resume.
-    Returns (user_id, tenant_id, auth_level, token)."""
-    token = convo.session_token
-    if token:
-        try:
-            c = decode_token(token)
-            return c.user_id, c.tenant_id, c.auth_level, token
-        except AuthError:
-            pass
-    fresh = mint_session_token(convo.user_id, tenant_id=convo.tenant_id)
-    c = decode_token(fresh)
-    convo.session_token = fresh
-    return c.user_id, c.tenant_id, c.auth_level, fresh
+    return ConversationOut(id=convo.id, user_id=convo.user_id, status=convo.status)
 
 
 async def _append_message(
@@ -175,7 +235,7 @@ async def _append_message(
         tenant_id=convo.tenant_id,
         conversation_id=convo.id,
         role=role,
-        content=redact_pii(content), #: redact PII before store
+        content=redact_pii(content),  # redact PII before store
         sequence_num=next_seq,
     )
     db.add(msg)
@@ -196,78 +256,84 @@ async def _history(db: AsyncSession, conversation_id: str) -> list[HistoryTurn]:
     return [HistoryTurn(role=m.role, content=m.content) for m in reversed(recent)]
 
 
+def _step_up_granted(convo: Conversation, pending: PendingWrite | None) -> bool:
+    """A verified OTP authorizes exactly the pending write it was earned for, briefly."""
+    return (
+        pending is not None
+        and convo.step_up_for == pending.idempotency_key
+        and convo.step_up_until is not None
+        and convo.step_up_until > datetime.now(UTC)
+    )
+
+
 @router.post(
     "/conversations/{conversation_id}/messages",
     response_model=MessageAccepted,
     tags=["conversations"],
+    dependencies=[per_customer("turns", limit=30)],
 )
 async def send_message(
-    conversation_id: str, body: SendMessage, db: AsyncSession = Depends(get_session)
+    body: SendMessage,
+    convo: Conversation = Depends(owned_conversation),
+    db: AsyncSession = Depends(get_session),
 ) -> MessageAccepted:
-    convo = await db.get(Conversation, conversation_id)
-    if convo is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
     # Consent gate (DPDP): processing proceeds only while consent is granted.
-    # A withdrawn conversation is closed to further processing.
     if convo.consent_status == "withdrawn":
         raise HTTPException(status_code=403, detail="consent withdrawn; processing halted")
 
-    user_id, tenant_id, auth_level, _ = _claims_or_refresh(convo)
-    history = await _history(db, conversation_id)
+    history = await _history(db, convo.id)
     msg = await _append_message(db, convo, "user", body.content)
-
-    run_id = uuid.uuid4().hex
-    await enqueue_run(
-        RunRequest(
-            run_id=run_id,
-            conversation_id=conversation_id,
-            user_id=user_id,
-            tenant_id=tenant_id,
-            auth_level=auth_level,
-            message=body.content,
-            history=history,
-            known_entities=mb.get_customer_context(user_id),
-            prev_language=convo.language,
-        )
+    req = RunRequest(
+        run_id=uuid.uuid4().hex,
+        conversation_id=convo.id,
+        user_id=convo.user_id,
+        tenant_id=convo.tenant_id,
+        auth_level=AuthLevel.SESSION,  # a fresh message never carries step-up forward
+        message=body.content,
+        history=history,
+        known_entities=mb.get_customer_context(convo.user_id),
+        prev_language=convo.language,
     )
-    return MessageAccepted(conversation_id=conversation_id, message_id=msg.id, run_id=run_id)
+    # Commit BEFORE enqueueing so the worker never races ahead of this turn's rows.
+    await db.commit()
+    await enqueue_run(req)
+    return MessageAccepted(conversation_id=convo.id, message_id=msg.id, run_id=req.run_id)
 
 
 @router.post(
     "/conversations/{conversation_id}/reply",
     response_model=MessageAccepted,
     tags=["conversations"],
+    dependencies=[per_customer("turns", limit=30)],
 )
 async def reply(
-    conversation_id: str, body: SendMessage, db: AsyncSession = Depends(get_session)
+    body: SendMessage,
+    convo: Conversation = Depends(owned_conversation),
+    db: AsyncSession = Depends(get_session),
 ) -> MessageAccepted:
     """Resume a suspended run (clarification / step-up OTP / write confirmation).
 
-    Re-validates identity first. For an OTP reply, verifies the challenge and
-    re-mints the token at step_up; for a confirmation, carries the persisted pending write
-    and the yes/no answer into a fresh run.
+    Identity comes from the bearer token (ownership already checked). An OTP reply is verified
+    deterministically and, on success, grants step-up for THIS pending write only; a
+    confirmation carries the persisted pending write and the yes/no answer into a fresh run.
     """
-    convo = await db.get(Conversation, conversation_id)
-    if convo is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
     if not convo.suspend_status:
         raise HTTPException(status_code=409, detail="conversation is not awaiting a reply")
 
-    user_id, tenant_id, auth_level, token = _claims_or_refresh(convo)
     pending = PendingWrite(**convo.pending_write) if convo.pending_write else None
     original = convo.original_message or body.content
-    history = await _history(db, conversation_id)
+    history = await _history(db, convo.id)
     await _append_message(db, convo, "user", body.content)
 
     req = RunRequest(
         run_id=uuid.uuid4().hex,
-        conversation_id=conversation_id,
-        user_id=user_id,
-        tenant_id=tenant_id,
-        auth_level=auth_level,
+        conversation_id=convo.id,
+        user_id=convo.user_id,
+        tenant_id=convo.tenant_id,
+        auth_level=AuthLevel.STEP_UP if _step_up_granted(convo, pending) else AuthLevel.SESSION,
         message=original,  # re-send the original so the write re-evaluates (not the reply)
         history=history,
-        known_entities=mb.get_customer_context(user_id),
+        known_entities=mb.get_customer_context(convo.user_id),
         pending_write=pending,
         intent_nonce=pending.intent_nonce if pending else 0,
         prev_language=convo.language,
@@ -276,18 +342,20 @@ async def reply(
 
     if convo.suspend_status == "awaiting_input" and convo.challenge_id:
         # Step-up OTP reply. A one-time code is a security credential — verified deterministically,
-        # never interpreted by an LLM. Verify, then re-mint at step_up (or escalate on failure).
-        if verify_step_up(convo.challenge_id, body.content, user_id):
-            fresh = mint_session_token(user_id, tenant_id=tenant_id, auth_level=AuthLevel.STEP_UP)
-            convo.session_token = fresh
+        # never interpreted by an LLM. Success grants step-up for this pending write, briefly.
+        if verify_step_up(convo.challenge_id, body.content, convo.user_id):
+            convo.step_up_for = pending.idempotency_key if pending else None
+            convo.step_up_until = datetime.now(UTC) + timedelta(
+                seconds=get_settings().step_up_grant_ttl_s
+            )
             req.auth_level = AuthLevel.STEP_UP
         else:
             req.challenge_response = body.content  # wrong OTP -> graph escalates
     else:
-        # Option B: an LLM interprets the reply (confirm / reject / value / correction / other)
-        # from the suspend context + history. The write trigger stays deterministic — a "confirm"
-        # is normalized to the canonical "yes" and identity_node re-parses yes/no before acting,
-        # so the LLM understands phrasing but never fires (or raises) a write on its own.
+        # An LLM interprets the reply (confirm / reject / unclear / value / correction / other)
+        # from the suspend context + history, under a deterministic AND-guard. The write trigger
+        # stays deterministic — a "confirm" is normalized to the canonical "yes" and
+        # identity_node re-parses yes/no before acting.
         verdict = await interpret_resume(
             convo.suspend_status, pending, original, body.content, history
         )
@@ -313,17 +381,18 @@ async def reply(
                 req.pending_write = None
                 req.intent_nonce = 0
 
-    # Clear suspend custody now; the worker will re-set it if the run suspends again.
+    # Clear suspend custody now; the worker re-sets it if the run suspends again. Commit BEFORE
+    # enqueueing so this write can't land after (and overwrite) the worker's new suspend state.
     convo.suspend_status = None
+    await db.commit()
     await enqueue_run(req)
-    return MessageAccepted(
-        conversation_id=conversation_id, message_id="", run_id=req.run_id
-    )
+    return MessageAccepted(conversation_id=convo.id, message_id="", run_id=req.run_id)
 
 
 @router.get("/conversations/{conversation_id}/stream", tags=["conversations"])
-async def stream(conversation_id: str):
-    """SSE stream of agent trace + final response for the latest run."""
+async def stream(convo: Conversation = Depends(owned_conversation)):
+    """SSE stream of agent trace + final response for the latest run (owner only)."""
+    conversation_id = convo.id
 
     async def event_gen():
         async for raw in subscribe_trace(conversation_id):
@@ -338,15 +407,13 @@ async def stream(conversation_id: str):
     tags=["conversations"],
 )
 async def get_history(
-    conversation_id: str, db: AsyncSession = Depends(get_session)
+    convo: Conversation = Depends(owned_conversation),
+    db: AsyncSession = Depends(get_session),
 ) -> list[MessageOut]:
-    convo = await db.get(Conversation, conversation_id)
-    if convo is None:
-        raise HTTPException(status_code=404, detail="conversation not found")
     rows = (
         await db.scalars(
             select(Message)
-            .where(Message.conversation_id == conversation_id)
+            .where(Message.conversation_id == convo.id)
             .order_by(Message.sequence_num)
         )
     ).all()
@@ -356,25 +423,37 @@ async def get_history(
     ]
 
 
-@router.delete("/users/{user_id}/data", tags=["compliance"])
-async def erase_user(user_id: str) -> dict:
-    """Right-to-erasure (DPDP): tombstone the customer's PII, withdraw consent. The hash-chained
-    audit log is left intact (it holds no raw PII), so the 7-year hold stays erasure-compatible."""
+# --- compliance ------------------------------------------------------------------------------
+
+
+@router.delete("/me/data", tags=["compliance"])
+async def erase_my_data(claims: SessionClaims = Depends(current_customer)) -> dict:
+    """Right-to-erasure (DPDP), self-service: the signed-in customer erases THEIR OWN data.
+    Tombstones PII, withdraws consent, and signs out every session. The hash-chained audit log
+    is left intact (it holds no raw PII), so the 7-year hold stays erasure-compatible."""
     from saral.compliance.erasure import erase_user_data
 
-    counts = await erase_user_data(user_id)
-    return {"user_id": user_id, "erased": counts, "consent_status": "withdrawn"}
+    counts = await erase_user_data(claims.user_id)
+    mb.revoke_user_sessions(claims.user_id)
+    return {"erased": counts, "consent_status": "withdrawn"}
+
+
+# --- server-to-server (the RM's system) --------------------------------------------------------
 
 
 class ResolveEscalation(BaseModel):
-    operator_id: str
+    operator_id: str  # which RM handled it, asserted by the authenticated RM system
     reply: str | None = None
 
 
-@router.post("/escalations/{escalation_id}/resolve", tags=["escalations"])
+@router.post(
+    "/escalations/{escalation_id}/resolve",
+    tags=["escalations"],
+    dependencies=[Depends(require_service_key)],
+)
 async def resolve_escalation_route(escalation_id: str, body: ResolveEscalation) -> dict:
-    """Record which operator handled an escalation, and when (: operator is audit-only —
-    this writes audit metadata; an operator never drives a turn or fires a tool)."""
+    """Called by the RM's own system (X-Service-Key), never by a browser: records which RM
+    handled the request and when. The RM performs the actual change outside Saral."""
     from saral.db.repository import resolve_escalation
 
     ok = await resolve_escalation(escalation_id, body.operator_id, body.reply)

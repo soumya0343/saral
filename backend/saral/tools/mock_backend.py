@@ -19,6 +19,9 @@ __all__ = [
     "raise_ticket",
     "file_claim",
     "identify_customer",
+    "find_customer",
+    "get_customer",
+    "revoke_user_sessions",
     "get_customer_context",
 ]
 
@@ -45,6 +48,18 @@ def file_claim(user_id: str, subject: str, idempotency_key: str) -> ClaimStatus:
 
 def identify_customer(name: str, mobile: str | None = None, email: str | None = None) -> dict:
     return get_store().identify_customer(name, mobile, email)
+
+
+def find_customer(mobile: str | None = None, email: str | None = None) -> dict | None:
+    return get_store().find_customer(mobile, email)
+
+
+def get_customer(user_id: str) -> dict | None:
+    return get_store().get_customer(user_id)
+
+
+def revoke_user_sessions(user_id: str) -> None:
+    get_store().revoke_user_sessions(user_id)
 
 
 def get_customer_context(user_id: str) -> dict:

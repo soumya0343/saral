@@ -1,0 +1,82 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  backend:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: saral
+          POSTGRES_PASSWORD: saral
+          POSTGRES_DB: saral_test
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U saral" --health-interval 5s --health-timeout 3s
+          --health-retries 10
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: >-
+          --health-cmd "redis-cli ping" --health-interval 5s --health-timeout 3s
+          --health-retries 10
+    env:
+      # Offline + deterministic: stub LLM, hashing embedder (see tests/conftest.py).
+      APP_ENV: test
+      DATABASE_URL: postgresql+asyncpg://saral:saral@localhost:5432/saral_test
+      SARAL_TEST_DATABASE_URL: postgresql+asyncpg://saral:saral@localhost:5432/saral_test
+      SARAL_TEST_REDIS_URL: redis://localhost:6379/1
+      EMBEDDER: hashing
+      LLM_PROVIDER_ORDER: stub
+      LLM_ROLE_TRIAGE: stub
+      LLM_ROLE_SYNTHESIS: stub
+      LLM_ROLE_JUDGE: stub
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+      - run: uv sync --frozen
+      - name: Lint
+        run: uv run ruff check backend tests
+      - name: Typecheck
+        run: uv run mypy backend
+      - name: Migrate
+        run: uv run alembic upgrade head
+      - name: Tests (unit + API integration)
+        run: uv run pytest -q
+      - name: Offline eval gate
+        run: |
+          PYTHONPATH=backend uv run python - <<'PY'
+          import asyncio
+          from saral.eval.runner import run_eval
+
+          s = asyncio.run(run_eval(persist=False, save_report=False)).summary
+          print(f"pass_rate={s.pass_rate:.3f} block_rate={s.compliance_block_rate:.3f}")
+          # Safety is a hard bar; overall pass rate guards against regressions.
+          assert s.compliance_block_rate == 1.0, "compliance block rate below 100%"
+          assert s.pass_rate >= 0.95, "offline eval pass rate regressed"
+          PY
+
+  frontend:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: frontend
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - run: npm ci
+      - name: Typecheck
+        run: npx tsc --noEmit
+      - name: Build
+        run: npm run build

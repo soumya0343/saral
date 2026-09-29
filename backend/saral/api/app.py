@@ -52,16 +52,24 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
     app.add_middleware(RequestIDMiddleware)
+    # Only the frontend may call from a browser. Auth is a bearer header (no cookies), so
+    # credentials stay off.
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=["*"],
-        allow_methods=["*"],
-        allow_headers=["*"],
+        allow_origins=settings.cors_origins,
+        allow_methods=["GET", "POST", "DELETE"],
+        allow_headers=["Authorization", "Content-Type", "Accept"],
     )
 
     @app.get("/health", tags=["meta"])
-    async def health() -> dict[str, str]:
-        return {"status": "ok", "env": settings.app_env, "version": __version__}
+    async def health() -> dict[str, str | bool]:
+        # demo_mode lets the UI label the simulated OTP delivery honestly.
+        return {
+            "status": "ok",
+            "env": settings.app_env,
+            "version": __version__,
+            "demo_mode": settings.demo_mode,
+        }
 
     app.include_router(auth_router)
     app.include_router(router)

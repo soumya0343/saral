@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import time
 
+from saral.compliance.pii import redact_pii
 from saral.graph.build import build_checkpointed_graph
 from saral.graph.state import RunState
 from saral.logging import get_logger
@@ -50,7 +51,7 @@ async def execute_run(req: RunRequest) -> RunState:
             data=data or {},
         )
 
-    await publish_trace(ev("run_started", data={"message": req.message}))
+    await publish_trace(ev("run_started", data={"message": redact_pii(req.message)}))
 
     final_state = init
     pending_otp: str | None = None
@@ -78,7 +79,7 @@ async def execute_run(req: RunRequest) -> RunState:
                             data={
                                 "language": update.get("language"),
                                 "intents": [i.model_dump() for i in update.get("intents", [])],
-                                "entities": update.get("entities", {}),
+                                "entities": _redacted(update.get("entities", {})),
                             },
                         )
                     )
@@ -176,6 +177,11 @@ async def execute_run(req: RunRequest) -> RunState:
         await publish_trace(ev("run_finished", data={"status": final_state.status}))
 
     return final_state
+
+
+def _redacted(entities: dict) -> dict:
+    """Trace events are a developer view: mask contact values (mobile/email) in them."""
+    return {k: redact_pii(v) if isinstance(v, str) else v for k, v in entities.items()}
 
 
 async def _persist(state: RunState) -> None:

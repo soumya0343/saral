@@ -27,7 +27,7 @@ _complete_handler: CompleteHandler | None = None
 def register_structured_handler[S: BaseModel](
     schema: type[S], handler: Callable[[list[Message]], S]
 ) -> None:
-    _structured_handlers[schema] = handler  # type: ignore[assignment]
+    _structured_handlers[schema] = handler
 
 
 def register_complete_handler(handler: CompleteHandler) -> None:

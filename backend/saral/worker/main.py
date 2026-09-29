@@ -56,7 +56,9 @@ async def run() -> None:
         )
         if not resp:
             continue
-        for _stream, entries in resp:
+        # redis-py types this loosely; at runtime it is [(stream, [(entry_id, fields), ...])].
+        batches: list[tuple[str, list]] = resp  # type: ignore[assignment]
+        for _stream, entries in batches:
             await _process_entries(r, settings, entries)
 
 
@@ -106,6 +108,8 @@ async def _process_entries(r, settings, entries) -> None:
             log.error("run.failed", entry=entry_id, error=str(e))
         finally:
             await r.xack(settings.run_stream, settings.run_consumer_group, entry_id)
+            # Drop the processed payload (raw customer message) instead of retaining it.
+            await r.xdel(settings.run_stream, entry_id)
 
 
 def main() -> None:

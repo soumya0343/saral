@@ -29,8 +29,12 @@ class Conversation(Base, TimestampMixin):
     consent_status: Mapped[str] = mapped_column(String(16), default="granted", nullable=False)
 
     # --- suspend/resume custody ---
-    # The current session token (mock IdP custody for the demo); re-validated on every resume.
+    # Deprecated (0007): tokens are held by the client now. Never written; kept for rollback.
     session_token: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Step-up grant: a verified OTP authorizes ONE pending write (its idempotency key) until
+    # `step_up_until`; cleared when the run ends terminally ("authority is mortal").
+    step_up_for: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    step_up_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
     suspend_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pending_write: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     challenge_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

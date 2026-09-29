@@ -14,6 +14,8 @@ services:
     preDeployCommand: cd /app && PYTHONPATH=backend python -m alembic upgrade head
     envVars:
       - { key: APP_ENV, value: prod }
+      - { key: DEMO_MODE, value: "true" }
+      - { key: FRONTEND_ORIGINS, sync: false }  # the deployed frontend origin (CORS)
       - { key: LOG_JSON, value: "true" }
       - { key: STORE_BACKEND, value: postgres }
       - { key: CHECKPOINT_BACKEND, value: postgres }
@@ -35,6 +37,7 @@ services:
     region: singapore
     envVars:
       - { key: APP_ENV, value: prod }
+      - { key: DEMO_MODE, value: "true" }
       - { key: LOG_JSON, value: "true" }
       - { key: STORE_BACKEND, value: postgres }
       - { key: CHECKPOINT_BACKEND, value: postgres }
