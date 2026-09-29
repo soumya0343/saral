@@ -60,3 +60,9 @@ async def test_graph_surfaces_personal_citation():
     assert any(p.is_personal for p in state.retrieved)
     assert state.final_response is not None
     assert state.final_response.citations
+
+
+def test_empty_or_missing_domains_default_deny():
+    # ADR-0002: an intent that authorizes no domain (complaint/small-talk/unknown) reads nothing.
+    assert search_customer("claim", "U1001", []) == []
+    assert search_customer("claim", "U1001", None) == []

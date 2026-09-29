@@ -296,6 +296,10 @@ async def reply(
                 req.resume_reply = "yes"
             elif verdict.kind == "reject":
                 req.resume_reply = "no"  # identity abandons the pending write (cancelled)
+            elif verdict.kind == "unclear":
+                # Mixed yes/no ("haan nahi"): keep the pending write; identity re-parses this
+                # reply as unclear and re-asks the read-back instead of acting on it.
+                req.resume_reply = body.content
             else:  # value / correction / other → topic switch: drop pending, run fresh
                 req.message = body.content
                 req.pending_write = None

@@ -7,7 +7,8 @@ fallback (parse_confirmation + value-shape) covers offline/eval and any LLM fail
 
 The actual write trigger stays deterministic downstream: the route normalizes a "confirm" to the
 canonical "yes" and identity_node still re-parses yes/no before acting — so the LLM understands
-phrasing but never fires a write by itself.
+phrasing but never fires a write by itself. On top of that, a deterministic AND-guard overrides
+the LLM: a reply containing any negation can never count as "confirm" ("जी नहीं", "not ok").
 """
 
 from __future__ import annotations
@@ -17,7 +18,7 @@ from typing import Literal
 
 from pydantic import BaseModel
 
-from saral.actions.confirm import parse_confirmation
+from saral.actions.confirm import has_confirmation_signal, parse_confirmation
 from saral.llm.base import LLMError, Message
 from saral.llm.factory import get_llm
 from saral.logging import get_logger
@@ -25,7 +26,8 @@ from saral.schemas import HistoryTurn, PendingWrite
 
 log = get_logger(__name__)
 
-ResumeKind = Literal["confirm", "reject", "value", "correction", "other"]
+# "unclear": a mixed yes/no reply to the read-back ("haan nahi") -> re-ask, keep the write.
+ResumeKind = Literal["confirm", "reject", "unclear", "value", "correction", "other"]
 
 
 class ResumeVerdict(BaseModel):
@@ -43,6 +45,8 @@ def _deterministic(suspend_status: str, reply: str) -> ResumeVerdict:
             return ResumeVerdict(kind="confirm")
         if c == "no":
             return ResumeVerdict(kind="reject")
+        if has_confirmation_signal(reply):
+            return ResumeVerdict(kind="unclear")
         return ResumeVerdict(kind="other")
     # clarification (awaiting_input, no OTP challenge)
     if c == "no":
@@ -58,6 +62,7 @@ _SYSTEM = (
     "mobile number or email). Classify the reply into exactly one kind:\n"
     "- confirm: agrees to proceed (yes, haan, ok, go ahead, pakka, kar do, theek hai)\n"
     "- reject: declines or cancels (no, nahi, cancel, rehne do, mat karo)\n"
+    "- unclear: mixes agreement and refusal, or is ambiguous about the pending change\n"
     "- value: supplies the requested value (a phone number or an email address)\n"
     "- correction: changes WHICH field to update (e.g. 'nahi, mobile' when you asked about email)\n"
     "- other: an unrelated new request or question\n"
@@ -86,7 +91,21 @@ async def interpret_resume(
         msgs.append(Message(role=role, content=h.content))
     msgs.append(Message(role="user", content=reply))
     try:
-        return await llm.structured(msgs, ResumeVerdict, max_tokens=10)
+        verdict = await llm.structured(msgs, ResumeVerdict, max_tokens=10)
     except LLMError as e:
         log.warning("resume.llm_failed", error=str(e))
         return _deterministic(suspend_status, reply)
+    return _guard(verdict, reply)
+
+
+def _guard(verdict: ResumeVerdict, reply: str) -> ResumeVerdict:
+    """Deterministic AND-guard over the LLM: 'confirm' stands only if the reply carries no
+    negation. The LLM may widen understanding ("go ahead bro") but never overrule a 'no'."""
+    if verdict.kind != "confirm":
+        return verdict
+    c = parse_confirmation(reply)
+    if c == "no":
+        return ResumeVerdict(kind="reject")
+    if c == "unclear" and has_confirmation_signal(reply):
+        return ResumeVerdict(kind="unclear")  # mixed signals -> re-ask
+    return verdict

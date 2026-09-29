@@ -72,6 +72,11 @@ class CustomerIndex:
                     continue
                 text = p.read_text(encoding="utf-8")
                 domain = doc.get("domain")
+                if not domain:
+                    # Purpose limitation needs a domain on every per-customer doc; an untagged
+                    # doc could never be filtered, so it is not indexed at all.
+                    log.warning("rag.customer_doc_no_domain", path=doc["path"], customer=cid)
+                    continue
                 for i, chunk in enumerate(_chunk(text)):
                     passage = Passage(
                         doc_id=doc["path"].replace("data/customers/", ""),
@@ -97,14 +102,16 @@ class CustomerIndex:
         if not self.items:
             return []
         top_k = top_k or get_settings().retrieval_top_k
-        allowed = set(allowed_domains) if allowed_domains else None
+        # Default-deny: no authorized domain (None or empty) means no personal data at all.
+        if not allowed_domains:
+            return []
+        allowed = set(allowed_domains)
 
         # HARD pre-filter (before scoring): own customer_id ∧ allowed domains.
         candidates = [
             it
             for it in self.items
-            if it.customer_id == user_id
-            and (allowed is None or it.passage.domain is None or it.passage.domain in allowed)
+            if it.customer_id == user_id and it.passage.domain in allowed
         ]
         if not candidates:
             return []

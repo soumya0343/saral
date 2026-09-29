@@ -9,31 +9,49 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 import time
 from typing import Literal
 
 from saral.config import get_settings
 from saral.schemas import Intent, Language, PendingWrite
 
-# Multilingual yes/no for confirmation.
-_YES = {"yes", "y", "confirm", "ok", "okay", "haan", "haa", "ha", "हाँ", "हां", "जी", "sure"}
-_NO = {"no", "n", "cancel", "stop", "nahi", "nahin", "नहीं", "ना", "mat"}
+# Multilingual yes/no for confirmation. A confirmation fires a state-changing request, so the
+# parser is asymmetric: a negation anywhere wins over agreement, and a reply carrying BOTH
+# signals ("haan nahi", "not ok", "no wait yes") is unclear -> re-ask, never yes.
+_YES = {
+    "yes", "y", "yeah", "yep", "yup", "confirm", "confirmed", "ok", "okay", "sure", "proceed",
+    "haan", "haa", "ha", "han", "hanji", "haanji", "theek", "thik", "bilkul", "zaroor", "pakka",
+    "हाँ", "हां", "हा", "ठीक", "बिलकुल", "बिल्कुल", "ज़रूर", "जरूर", "पक्का",
+}
+_NO = {
+    "no", "n", "nope", "not", "dont", "never", "cancel", "stop", "wait", "nahi", "nahin", "nai",
+    "nhi", "na", "mat", "ruko", "rehne", "नहीं", "नही", "ना", "मत", "रुको", "रहने", "रद्द",
+}
+# Politeness markers carry no polarity on their own: "जी नहीं" is a polite NO, "जी हाँ" a yes.
+_NEUTRAL = {"जी", "ji", "please", "pls", "sir", "madam", "ma'am"}
+_TOKEN_RE = re.compile(r"[^\wऀ-ॿ']+")
+
+
+def _tokens(text: str) -> set[str]:
+    t = (text or "").strip().lower().replace("’", "'").replace("'", "")  # don't -> dont
+    return {w for w in _TOKEN_RE.split(t) if w} - _NEUTRAL
 
 
 def parse_confirmation(text: str) -> Literal["yes", "no", "unclear"]:
-    t = (text or "").strip().lower()
-    if not t:
-        return "unclear"
-    tokens = set(t.replace(",", " ").replace(".", " ").split())
-    if tokens & _YES:
-        return "yes"
-    if tokens & _NO:
+    tokens = _tokens(text)
+    yes, no = bool(tokens & _YES), bool(tokens & _NO)
+    if no and not yes:
         return "no"
-    if t in _YES:
+    if yes and not no:
         return "yes"
-    if t in _NO:
-        return "no"
-    return "unclear"
+    return "unclear"  # empty, no signal, or mixed signals
+
+
+def has_confirmation_signal(text: str) -> bool:
+    """True if the reply carries any yes/no word (so an 'unclear' parse is a mixed answer to
+    the read-back, not an unrelated new request)."""
+    return bool(_tokens(text) & (_YES | _NO))
 
 
 def idempotency_key(conversation_id: str, tool: str, args: dict, intent_nonce: int) -> str:

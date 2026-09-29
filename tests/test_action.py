@@ -70,3 +70,56 @@ def test_parse_confirmation_multilingual():
     assert parse_confirmation("no") == "no"
     assert parse_confirmation("nahi") == "no"
     assert parse_confirmation("maybe later") == "unclear"
+
+
+# A confirmation fires a state-changing request: a negation must never read as "yes", and a
+# reply carrying both signals must re-ask (unclear), never confirm.
+_CONFIRMATION_CASES = [
+    ("yes", "yes"),
+    ("haan", "yes"),
+    ("हाँ", "yes"),
+    ("जी हाँ", "yes"),
+    ("haan ji", "yes"),
+    ("ok, go ahead", "yes"),
+    ("theek hai", "yes"),
+    ("bilkul", "yes"),
+    ("no", "no"),
+    ("nahi", "no"),
+    ("जी नहीं", "no"),
+    ("जी", "unclear"),
+    ("mat karo", "no"),
+    ("rehne do", "no"),
+    ("cancel it please", "no"),
+    ("don't do it", "no"),
+    ("do not", "no"),
+    ("not ok", "unclear"),
+    ("haan nahi", "unclear"),
+    ("nahi, ok nahi", "unclear"),
+    ("no wait yes", "unclear"),
+    ("maybe later", "unclear"),
+    ("", "unclear"),
+    ("what is my claim status?", "unclear"),
+]
+
+
+@pytest.mark.parametrize(("reply", "expected"), _CONFIRMATION_CASES)
+def test_parse_confirmation_negation_wins(reply, expected):
+    assert parse_confirmation(reply) == expected
+
+
+def test_has_confirmation_signal_separates_mixed_from_topic_switch():
+    from saral.actions.confirm import has_confirmation_signal
+
+    assert has_confirmation_signal("haan nahi")
+    assert not has_confirmation_signal("what is my claim status?")
+
+
+def test_resume_guard_never_confirms_a_negation():
+    from saral.actions.resume import ResumeVerdict, _deterministic, _guard
+
+    llm_says_confirm = ResumeVerdict(kind="confirm")
+    assert _guard(llm_says_confirm, "जी नहीं").kind == "reject"
+    assert _guard(llm_says_confirm, "haan nahi").kind == "unclear"
+    assert _guard(llm_says_confirm, "go ahead bro").kind == "confirm"  # LLM may widen yes
+    assert _deterministic("awaiting_confirmation", "haan nahi").kind == "unclear"
+    assert _deterministic("awaiting_confirmation", "claim status?").kind == "other"
