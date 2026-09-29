@@ -185,6 +185,11 @@ async def _reap() -> None:
 
 
 def main() -> None:
+    port = get_settings().worker_metrics_port
+    if port:
+        from prometheus_client import start_http_server
+
+        start_http_server(port)  # the worker is its own process: it serves its own metrics
     asyncio.run(run())
 
 

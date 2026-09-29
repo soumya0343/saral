@@ -60,6 +60,7 @@ _REGRESSION_KEYS = [
     "answer_correctness",
     "faithfulness",
     "multi_turn_success",
+    "rm_request_accuracy",
 ]
 _LOWER_IS_BETTER = ["false_block_rate"]
 
@@ -271,6 +272,7 @@ def print_report(report: EvalReport) -> None:
         ("answer_correctness", s.answer_correctness),
         ("faithfulness", s.faithfulness),
         ("multi_turn_success", s.multi_turn_success),
+        ("rm_request_accuracy", s.rm_request_accuracy),
         ("resolution_accuracy", s.resolution_accuracy),
         ("cross_lingual_consistency", s.cross_lingual_consistency),
     ]

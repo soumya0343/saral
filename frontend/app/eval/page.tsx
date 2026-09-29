@@ -21,6 +21,7 @@ type Summary = {
   faithfulness: number;
   false_block_rate: number;
   multi_turn_success: number;
+  rm_request_accuracy?: number;
   explanation_groundedness: number;
   pass_rate_by_language: Record<string, number>;
   judge_kappa_by_language: Record<string, number>;
@@ -59,6 +60,7 @@ const METRICS: [keyof Summary, string][] = [
   ["faithfulness", "Faithfulness (no unsupported numbers / claims)"],
   ["explanation_groundedness", "Explanation cites the customer's own documents"],
   ["multi_turn_success", "Multi-turn conversations"],
+  ["rm_request_accuracy", "RM requests raised correctly"],
   ["routing_accuracy", "Routing accuracy"],
   ["tool_sequence_correctness", "Tool-sequence correctness"],
   ["groundedness", "Groundedness (has citations)"],
@@ -212,8 +214,8 @@ export default function EvalDashboard() {
 
           <section className="mt-6">
             <h2 className="mb-2 text-sm font-medium text-neutral-500">Quality</h2>
-            {METRICS.map(([key, label]) => (
-              <Bar key={key} label={label} value={(report.summary[key] as number) ?? 0} />
+            {METRICS.filter(([key]) => report.summary[key] !== undefined).map(([key, label]) => (
+              <Bar key={key} label={label} value={report.summary[key] as number} />
             ))}
           </section>
 

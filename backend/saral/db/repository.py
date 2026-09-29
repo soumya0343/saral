@@ -177,6 +177,8 @@ async def persist_run(state: RunState) -> None:
                 Escalation(
                     tenant_id=esc.tenant_id,
                     conversation_id=esc.conversation_id,
+                    user_id=esc.user_id or state.user_id,
+                    request_id=esc.request_id,
                     detected_intent=esc.detected_intent,
                     blocking_reason=esc.blocking_reason,
                     attempted_actions={"tools": esc.attempted_actions},

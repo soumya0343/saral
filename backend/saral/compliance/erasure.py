@@ -8,6 +8,8 @@ right-to-erasure coexist. Withdrawal of consent fires this.
 
 from __future__ import annotations
 
+import asyncio
+
 from sqlalchemy import select, update
 
 from saral.db.models import ActionRecordRow, AgentRun, Conversation, Message
@@ -28,8 +30,13 @@ async def erase_user_data(user_id: str) -> dict[str, int]:
                 select(Conversation.id).where(Conversation.user_id == user_id)
             )
         ).all()
+        # RM requests: the encrypted change and the case summary go; status/kind stay (the RM
+        # may still need to know a request existed and was closed).
+        from saral.rm.requests import get_requests
+
+        rm = await asyncio.to_thread(get_requests().erase_user, user_id)
         if not convo_ids:
-            return {"messages": 0, "action_records": 0}
+            return {"messages": 0, "action_records": 0, "rm_requests": rm}
 
         msgs = await session.execute(
             update(Message)
@@ -56,6 +63,10 @@ async def erase_user_data(user_id: str) -> dict[str, int]:
             .values(consent_status="withdrawn", pending_write=None, original_message=None)
         )
         await session.commit()
-        counts = {"messages": int(getattr(msgs, "rowcount", 0) or 0), "action_records": acts}
+        counts = {
+            "messages": int(getattr(msgs, "rowcount", 0) or 0),
+            "action_records": acts,
+            "rm_requests": rm,
+        }
     log.info("erasure.complete", user_ref="(hashed elsewhere)", **counts)
     return counts

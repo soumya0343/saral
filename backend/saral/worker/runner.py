@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import time
 
+from saral import metrics
 from saral.compliance.pii import redact_pii
 from saral.graph.build import build_checkpointed_graph
 from saral.graph.state import RunState
@@ -67,6 +68,7 @@ async def execute_run(req: RunRequest) -> RunState:
                 now = time.monotonic()
                 elapsed_ms = int((now - prev_ts) * 1000)  # this node's wall-clock
                 prev_ts = now
+                metrics.NODE_SECONDS.labels(node_name).observe(elapsed_ms / 1000)
                 await publish_trace(ev("agent_started", agent=node_name))
                 final_state = final_state.model_copy(update=update)
 
@@ -163,6 +165,7 @@ async def execute_run(req: RunRequest) -> RunState:
             await publish_trace(
                 ev("otp", agent="identity", data={"code": pending_otp, "channel": "sms"})
             )
+        metrics.RUNS.labels(str(final_state.status)).inc()
         await _persist_or_warn(final_state)
         await _drop_checkpoint(graph, req.run_id)
     except TimeoutError as e:

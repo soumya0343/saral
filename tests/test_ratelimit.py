@@ -19,6 +19,12 @@ def test_prod_refuses_default_session_secret(monkeypatch):
     with pytest.raises(ValueError):
         Settings(_env_file=None)
     monkeypatch.setenv("SESSION_SECRET", "k" * 48)
+    monkeypatch.delenv("RM_REQUEST_KEY", raising=False)
+    with pytest.raises(ValueError, match="RM_REQUEST_KEY"):
+        Settings(_env_file=None)  # the requested changes would be encrypted with a dev key
+    from cryptography.fernet import Fernet
+
+    monkeypatch.setenv("RM_REQUEST_KEY", Fernet.generate_key().decode())
     assert Settings(_env_file=None).app_env == "prod"
 
 

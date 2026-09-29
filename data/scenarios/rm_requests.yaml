@@ -1,0 +1,227 @@
+# Phase 4 — RM requests, claim intake, complaints.
+# Every write and every escalation becomes a request for the customer's relationship manager
+# (RM). These check it is complete, deduplicated, queryable by the customer in their language,
+# and that a claim carries structured facts, not the raw chat message.
+
+# ---------------- Dedup: asking twice gives one request ----------------
+- id: rm_duplicate_contact_change_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "Please update my mobile number to 9811122233"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation }
+    - say: "yes"
+      expect: { status: escalated, rm_request: update_contact }
+    - say: "Please update my mobile number to 9811122233"
+      expect: { status: resolved, rm_request: update_contact, rm_duplicate: true }  # no 2nd OTP
+  expected: { status: resolved, tools: [], rm_request: update_contact, rm_duplicate: true }
+
+- id: rm_duplicate_contact_change_hinglish
+  category: action
+  language: hinglish
+  user_id: U1010
+  turns:
+    - say: "mera mobile number badal do 9811122233"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation }
+    - say: "haan"
+      expect: { status: escalated, rm_request: update_contact }
+    - say: "mera mobile number 9811122233 par badal do please"
+      expect: { status: resolved, rm_duplicate: true, rm_request: update_contact }
+  expected: { status: resolved, tools: [], rm_request: update_contact, rm_duplicate: true }
+
+- id: rm_different_change_is_a_new_request_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "Please update my mobile number to 9811122233"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation }
+    - say: "yes"
+      expect: { status: escalated, rm_request: update_contact }
+    - say: "Please update my email to asha.new@example.com"
+      expect: { status: awaiting_input }  # a different change: its own OTP, its own request
+  expected: { status: awaiting_input }
+
+# ---------------- The customer asks what happened to it ----------------
+- id: rm_status_after_change_hi
+  category: action
+  language: hi
+  user_id: U1003
+  turns:
+    - say: "मेरा मोबाइल नंबर 9811122233 में बदल दो"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation }
+    - say: "हाँ"
+      expect: { status: escalated, rm_request: update_contact }
+    - say: "मेरे अनुरोध की स्थिति क्या है?"
+      expect: { status: resolved, tools: [get_request_status], answer_contains: ["REQ"] }
+  expected: { status: resolved, tools: [get_request_status] }
+
+- id: rm_status_after_ticket_hinglish
+  category: action
+  language: hinglish
+  user_id: U1002
+  turns:
+    - say: "ek ticket banao: meri payment galat charge hui hai"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation }
+    - say: "haan"
+      expect: { status: escalated, rm_request: raise_ticket }
+    - say: "mere request ka kya hua?"
+      expect: { status: resolved, tools: [get_request_status], answer_contains: ["REQ"] }
+  expected: { status: resolved, tools: [get_request_status] }
+
+- id: rm_status_none_en
+  category: action
+  language: en
+  user_id: U1020
+  message: "What happened to my request?"
+  expected: { route: action, status: resolved, tools: [get_request_status] }
+
+- id: rm_status_none_hi
+  category: action
+  language: hi
+  user_id: U1020
+  message: "मेरे अनुरोध की स्थिति बताइए"
+  expected: { route: action, status: resolved, tools: [get_request_status] }
+
+- id: rm_status_other_customers_id_en
+  category: compliance
+  language: en
+  user_id: U1020
+  message: "What is the status of request REQ123456?"
+  # Scoped by the verified user_id: another customer's request simply doesn't exist for them.
+  expected: { status: resolved, tools: [] }
+
+# ---------------- Claim intake: structured facts, not the chat message ----------------
+- id: rm_claim_intake_stepwise_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "I want to file a claim"
+      expect: { status: awaiting_input }  # asks date, amount, hospital, what happened
+    - say: "It was a knee surgery at Apollo Hospital yesterday"
+      expect: { status: awaiting_input }  # amount still missing
+    - say: "45000"
+      expect: { status: awaiting_input }  # complete -> OTP
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation, answer_contains: ["45000", "Apollo Hospital", "knee surgery"] }
+    - say: "yes"
+      expect: { status: escalated, rm_request: file_claim }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
+
+- id: rm_claim_intake_hi
+  category: action
+  language: hi
+  user_id: U1003
+  turns:
+    - say: "मुझे नया क्लेम दर्ज करना है"
+      expect: { status: awaiting_input }
+    - say: "कल सिटी अस्पताल में पैर की हड्डी टूटने का इलाज हुआ, खर्च 30000 रुपये"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation, answer_contains: ["30000", "सिटी अस्पताल"] }
+    - say: "हाँ"
+      expect: { status: escalated, rm_request: file_claim }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
+
+- id: rm_claim_intake_which_policy_en
+  category: action
+  language: en
+  user_id: U1002  # holds two policies: the agent must ask which one
+  turns:
+    - say: "File a claim: car accident yesterday, repaired at Sharma Motors for Rs 18,500"
+      expect: { status: awaiting_input, answer_contains: ["POL1002", "POL1012"] }
+    - say: "POL1002"
+      expect: { status: awaiting_input }
+    - say: "{otp}"
+      expect: { status: awaiting_confirmation, answer_contains: ["POL1002", "18500"] }
+    - say: "yes"
+      expect: { status: escalated, rm_request: file_claim }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
+
+- id: rm_claim_intake_cancel_hinglish
+  category: action
+  language: hinglish
+  user_id: U1001
+  turns:
+    - say: "mujhe naya claim file karna hai"
+      expect: { status: awaiting_input }
+    - say: "rehne do, cancel"
+      expect: { status: resolved }
+  expected: { status: resolved, tools: [] }
+
+- id: rm_claim_intake_topic_switch_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "I want to file a claim"
+      expect: { status: awaiting_input }
+    - say: "Actually, what is the waiting period for pre-existing diseases?"
+      expect: { status: resolved, route: rag }
+  expected: { status: resolved, route: rag }
+
+# ---------------- Complaints: empathy, then a human on repeat ----------------
+- id: complaint_repeat_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "Your app is the worst, nothing is working"
+      expect: { status: resolved }  # empathy + offer a ticket
+    - say: "Still not working, this is horrible"
+      expect: { status: escalated, rm_request: handoff }
+  expected: { status: escalated, tools: [], rm_request: handoff }
+
+- id: complaint_repeat_hi
+  category: action
+  language: hi
+  user_id: U1003
+  turns:
+    - say: "आपकी सेवा बहुत खराब है, कुछ भी काम नहीं कर रहा"
+      expect: { status: resolved }
+    - say: "अब भी कुछ काम नहीं कर रहा, बेकार"
+      expect: { status: escalated, rm_request: handoff }
+  expected: { status: escalated, tools: [], rm_request: handoff }
+
+- id: complaint_repeat_hinglish
+  category: action
+  language: hinglish
+  user_id: U1010
+  turns:
+    - say: "aapka app bekar hai, kuch bhi not working"
+      expect: { status: resolved }
+    - say: "abhi bhi not working, worst service"
+      expect: { status: escalated, rm_request: handoff }
+  expected: { status: escalated, tools: [], rm_request: handoff }
+
+# ---------------- Every escalation is an RM request ----------------
+- id: rm_handoff_on_burned_otp_en
+  category: action
+  language: en
+  user_id: U1001
+  turns:
+    - say: "Please update my mobile number to 9811122233"
+      expect: { status: awaiting_input }
+    - say: "{wrong_otp}"
+      expect: { status: awaiting_input }
+    - say: "{wrong_otp}"
+      expect: { status: awaiting_input }
+    - say: "{wrong_otp}"
+      expect: { status: awaiting_input }
+    - say: "{wrong_otp}"
+      expect: { status: awaiting_input }
+    - say: "{wrong_otp}"  # OTP_MAX_ATTEMPTS=5: the code is burned -> human
+      expect: { status: escalated, rm_request: handoff }
+  expected: { status: escalated, tools: [], rm_request: handoff }

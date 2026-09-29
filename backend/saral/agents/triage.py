@@ -29,6 +29,7 @@ _ALLOWED_ACTIONS = {
     "update_contact",
     "raise_ticket",
     "file_claim",
+    "get_request_status",
 }
 
 log = get_logger(__name__)
@@ -75,6 +76,14 @@ _UPDATE_CONTACT = {
     "phone number update", "contact update", "email change", "email update",
     "नंबर बदलना", "नंबर चेंज", "मोबाइल बदल", "मोबाइल अपडेट", "ईमेल बदल",
 }
+# "What happened to my request?" — the customer's own RM requests (see saral/rm/requests.py).
+_REQUEST_STATUS = {
+    "my request", "request status", "status of my request", "what happened to my request",
+    "request ka kya hua", "request ka status", "mera request", "meri request", "meri application",
+    "application status", "rm ne", "relationship manager", "change request", "number change hua",
+    "अनुरोध", "रिक्वेस्ट", "आवेदन की स्थिति", "मेरा अनुरोध", "मेरी रिक्वेस्ट",
+}
+_REQ_RE = re.compile(r"\bREQ\d{4,}\b", re.IGNORECASE)
 _RAISE_TICKET = {
     "raise ticket", "raise a ticket", "file complaint", "register complaint",
     "ticket banao", "शिकायत", "complaint darj", "open ticket",
@@ -104,7 +113,11 @@ _META_FOLLOWUP = {
     "don't understand", "explain again", "explain that", "what do you mean", "matlab kya",
     "समझ नहीं", "समझाइए", "समझाओ", "फिर से बताइए", "दोबारा बताइए", "मतलब क्या",
 }
-_COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
+_COMPLAINT = {
+    "kaam nahi kar raha", "kaam nahi kar rahi", "kharab", "ghatiya", "bakwas", "pareshan",
+    "frustrated", "fed up", "useless", "terrible", "disappointed",
+    "खराब", "बेकार", "घटिया", "बकवास", "परेशान", "गुस्सा", "काम नहीं कर रहा", "काम नहीं कर रही",
+    "not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
 # Capability / permission questions ("can I…?", "kya main … sakti/sakta hu", "how do I…").
 # These ASK ABOUT an action, they don't request it — route to INFORMATION, never a write.
@@ -180,6 +193,8 @@ def extract_entities(text: str) -> dict:
         entities["mobile"] = m.group(1)
     if m := _EMAIL_RE.search(text):
         entities["email"] = m.group(1)
+    if m := _REQ_RE.search(text):
+        entities["request_id"] = m.group(0).upper()
     # On-demand long-term memory signal: the customer is referencing past interactions.
     if _hits(text, _HISTORY):
         entities["wants_history"] = True
@@ -242,6 +257,12 @@ def classify_intents(text: str) -> list[Intent]:
         intents.append(Intent(type=IntentType.ACTION, action="raise_ticket", confidence=0.85))
     if _hits(wlower, _FILE_CLAIM):
         intents.append(Intent(type=IntentType.ACTION, action="file_claim", confidence=0.9))
+    if (_REQ_RE.search(text) or _hits(lower, _REQUEST_STATUS)) and not any(
+        i.action in _STEP_UP_ACTIONS_RT for i in intents
+    ):
+        intents.append(
+            Intent(type=IntentType.ACTION, action="get_request_status", confidence=0.85)
+        )
     has_claim_id = bool(_CLAIM_RE.search(text))
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
         "क्लेम" in text and "स्टेटस" in text
@@ -306,7 +327,9 @@ _SYSTEM_PROMPT = (
     "Intent types: information, action, complaint, small_talk, unknown.\n"
     "Action values (set `action` only for type=action): get_claim_status (check an existing "
     "claim), get_policy_details (look up a policy), update_contact (change mobile/email), "
-    "raise_ticket (open a support ticket/complaint), file_claim (lodge a NEW insurance claim).\n"
+    "raise_ticket (open a support ticket/complaint), file_claim (lodge a NEW insurance claim), "
+    "get_request_status (what happened to a change/claim/ticket request the customer already "
+    "made — their relationship-manager requests, ids like REQ123456).\n"
     "CRITICAL: A question about WHETHER or HOW to do something — 'can I…', 'how do I…', "
     "'kya main … kar sakta/sakti hu', 'is it possible' — is type=information, NEVER an action. "
     "Use an action ONLY when the customer directly asks you to perform it now "
@@ -343,7 +366,7 @@ def _no_writes(intents: list[Intent], keep: set[str] | None = None) -> list[Inte
     return out or [Intent(type=IntentType.INFORMATION, confidence=0.7)]
 
 
-_READ_ACTIONS = {"get_claim_status", "get_policy_details"}
+_READ_ACTIONS = {"get_claim_status", "get_policy_details", "get_request_status"}
 
 
 def _reconcile(result: IntentResult, message: str) -> IntentResult:
@@ -375,6 +398,11 @@ def _reconcile(result: IntentResult, message: str) -> IntentResult:
         intents = [i for i in intents if i.action != "get_policy_details"]
         if converted and not any(i.type == IntentType.INFORMATION for i in intents):
             intents.append(Intent(type=IntentType.INFORMATION, confidence=converted[0].confidence))
+    # "Still not working, worst service" is a complaint, not a question: the LLM tends to add a
+    # generic information intent, which would skip the empathy / repeat-escalation path.
+    det_types = {i.type for i in det}
+    if det_types == {IntentType.COMPLAINT} and not any(i.action for i in intents):
+        intents = list(det)
     if any(i.type != IntentType.UNKNOWN for i in intents):
         intents = [i for i in intents if i.type != IntentType.UNKNOWN]
     result.intents = intents or [Intent(type=IntentType.UNKNOWN, confidence=0.3)]
@@ -433,10 +461,15 @@ class TriageAgent:
             # No Sarvam configured: deterministic detection is the expected path, not degraded.
             return detect_language(message), False
         try:
-            return await self._sarvam.detect_language(message), False
+            lang = await self._sarvam.detect_language(message)
         except LLMError as e:
             log.warning("triage.sarvam_lid_failed", error=str(e))
             return detect_language(message), True
+        # Sarvam's LID tends to call short romanized Hindi ("mera mobile number badal do")
+        # English; two or more distinctive Hindi words settle it as Hinglish.
+        if lang == Language.EN and detect_language(message) == Language.HINGLISH:
+            lang = Language.HINGLISH
+        return lang, False
 
     async def _classify(
         self, message: str, history: list[HistoryTurn], retry: bool = False

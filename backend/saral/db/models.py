@@ -139,6 +139,9 @@ class Escalation(Base, TimestampMixin):
     id: Mapped[str] = mapped_column(String(32), primary_key=True, default=uuid_str)
     tenant_id: Mapped[str] = mapped_column(String(64), default=_DEFAULT_TENANT, nullable=False)
     conversation_id: Mapped[str] = mapped_column(String(32), index=True, nullable=False)
+    user_id: Mapped[str | None] = mapped_column(String(32), index=True, nullable=True)
+    # The RM request this escalation became (saral/rm/requests.py).
+    request_id: Mapped[str | None] = mapped_column(String(16), index=True, nullable=True)
     detected_intent: Mapped[str] = mapped_column(String(64), nullable=False)
     blocking_reason: Mapped[str] = mapped_column(String(64), nullable=False)
     attempted_actions: Mapped[dict | None] = mapped_column(JSONB, nullable=True)

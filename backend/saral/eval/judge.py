@@ -53,6 +53,11 @@ def _grade(ctx: dict) -> JudgeVerdict:
         checks.append(ok)
         reasons.append(f"tools {'ok' if ok else 'mismatch'}")
 
+    if exp.get("rm_request"):
+        ok = got.get("rm_request") == exp["rm_request"]
+        checks.append(ok)
+        reasons.append(f"rm-request {'ok' if ok else 'missing'}")
+
     if exp.get("route"):
         ok = got.get("route") == exp["route"]
         checks.append(ok)
@@ -102,6 +107,17 @@ faithful — true if every factual claim in the reply (amounts, dates, clause nu
   words; false if any claim is unsupported or contradicted; null if the reply makes no factual
   claims (e.g. a pure question or refusal).
 score — 0..1 overall quality. reason — one short sentence.
+
+How this agent works (do not penalize it for these):
+  * It never changes customer data itself. A confirmed change (contact update, new claim, ticket)
+    is handed to the customer's relationship manager (RM): status "escalated" with a request
+    reference IS the correct, resolved outcome when rm_request is expected. Changes need a
+    one-time-code (OTP) verification and a yes/no read-back first. When rm_duplicate is true
+    the same change is already with the RM: replying with the existing reference, without a
+    new OTP and without escalating again (status "resolved"), is correct.
+  * `route` is internal plumbing ("suspend" = the turn ended waiting for or handing to a human).
+  * The RM service level (e.g. "within 24h") is the agent's own policy, not a claim that needs
+    a source.
 
 Judge only what is shown; do not assume facts that aren't in the passages."""
 

@@ -69,6 +69,8 @@ def actual_outcome(state: RunState, *, with_content: bool = False) -> dict:
         "tools": [a.tool for a in state.actions if a.ok],
         "citations": resp.citations if resp else [],
         "escalated": bool(resp.escalated) if resp else False,
+        "rm_request": state.rm_request_kind,
+        "rm_duplicate": bool(state.rm_request_id) and not state.rm_request_created,
     }
     if with_content:  # what an LLM judge needs to grade the answer itself
         out["language"] = str(state.language) if state.language else None
@@ -102,6 +104,10 @@ def check_expected(exp: Expected, state: RunState) -> list[str]:
         failed.append("answer_contains")
     if exp.cite_docs and not _cites(got["citations"], exp.cite_docs):
         failed.append("cite_docs")
+    if exp.rm_request and got["rm_request"] != exp.rm_request:
+        failed.append("rm_request")
+    if exp.rm_duplicate and not got["rm_duplicate"]:
+        failed.append("rm_duplicate")
     return failed
 
 
@@ -174,6 +180,10 @@ def evaluate_scenario(
         ) and any(p.is_personal for p in state.retrieved)
     if exp.status is not None:
         flags["status"] = got["status"] == exp.status
+    if exp.rm_request:
+        flags["rm_request"] = got["rm_request"] == exp.rm_request and (
+            not exp.rm_duplicate or got["rm_duplicate"]
+        )
     if exp.answer_contains or exp.cite_docs:
         flags["answer_correctness"] = (
             not exp.answer_contains or _has_facts(reply, exp.answer_contains)
@@ -323,6 +333,7 @@ def summarize(
             round(1 - _rate(results, "no_false_block"), 4) if no_false else 0.0
         ),
         multi_turn_success=_rate(results, "turns"),
+        rm_request_accuracy=_rate(results, "rm_request"),
         pass_rate_by_language=pass_by_lang,
         tokens_total=sum(r.tokens for r in results),
         judge_human_agreement=round(judge_human, 3) if judge_human is not None else None,

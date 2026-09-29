@@ -154,5 +154,7 @@ async def run_scenario(scenario: Scenario) -> Outcome:
             resume_reply="yes",
         )
         states.append(RunState.model_validate(await graph.ainvoke(resume)))
-        sent.append("yes")
+        # The harness verified the OTP on the customer's behalf; say so in the transcript the
+        # judge reads, instead of a bare "yes" that looks like a skipped verification.
+        sent.append("[verified with OTP] yes")
     return Outcome(states=states, user_turns=sent)

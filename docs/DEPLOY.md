@@ -8,7 +8,7 @@ Kubernetes is out of scope for the demo). No LLM key is required — without one
 ## Environment variables
 
 All settings live in `backend/saral/config.py` (pydantic-settings) with safe local defaults.
-Only the datastore URLs and `SESSION_SECRET` must be set in production.
+Only the datastore URLs, `SESSION_SECRET` and `RM_REQUEST_KEY` must be set in production.
 
 ### Required in prod (no safe default)
 
@@ -17,6 +17,7 @@ Only the datastore URLs and `SESSION_SECRET` must be set in production.
 | `DATABASE_URL` | `postgresql+asyncpg://<user>:<pass>@<host>:5432/saral` | `fly postgres attach` / Render managed PG `connectionString` |
 | `REDIS_URL` | `redis://...` or `rediss://...` (TLS) | Upstash (Fly) / Render managed Redis |
 | `SESSION_SECRET` | ≥32-byte HMAC key for signing session tokens (the mock IdP). **Boot fails in prod if unset/default.** | generate: `openssl rand -hex 32` |
+| `RM_REQUEST_KEY` | Fernet key encrypting the change a customer asked their RM to make (new mobile, claim facts) at rest. **Boot fails in prod if unset.** Rotating it makes older requests' changes unreadable. | generate: `python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())"` |
 | `FRONTEND_ORIGINS` | CORS allow-list: the deployed frontend origin(s), comma-separated | e.g. `https://saral.vercel.app` |
 
 ### Optional (app falls back to the stub LLM)
@@ -29,7 +30,9 @@ Only the datastore URLs and `SESSION_SECRET` must be set in production.
 | `STORE_BACKEND` / `CHECKPOINT_BACKEND` | `memory` | set `postgres` in prod for durability + cross-process resume |
 | `SESSION_TTL_MIN` | `30` | session token TTL |
 | `STEP_UP_TTL_S` | `300` | OTP challenge validity |
-| `SERVICE_API_KEY` | unset | server-to-server key for the RM's system (`/escalations/{id}/resolve`) and `POST /eval/run` in prod; unset disables both |
+| `SERVICE_API_KEY` | unset | server-to-server key for the RM's system (`GET /rm/requests`, `GET /rm/requests/{id}`, `POST /rm/requests/{id}/status`, legacy `/escalations/{id}/resolve`) and `POST /eval/run` in prod; unset disables them |
+| `RM_APPROVAL_ACTIONS` | `update_contact,raise_ticket,file_claim` | confirmed writes raised to the RM instead of executed (the RM owns every write) |
+| `WORKER_METRICS_PORT` | `9100` | the worker's own Prometheus `/metrics` (the API serves `/metrics` and `/ready`) |
 | `CLIENT_IP_HEADER` | unset | header with the real client IP for rate limits (`Fly-Client-IP` on Fly) |
 | `DEMO_MODE` | `false` | no SMS channel: show the OTP as a simulated SMS popup (set `true` for the public demo) |
 | `OTP_MAX_ATTEMPTS` | `5` | wrong OTP guesses before a challenge is burned |
@@ -52,10 +55,12 @@ fly secrets set \
   DATABASE_URL="postgresql+asyncpg://<user>:<pass>@<host>.internal:5432/saral" \
   REDIS_URL="rediss://default:<token>@<upstash-host>:<port>" \
   SESSION_SECRET="$(openssl rand -hex 32)" \
+  RM_REQUEST_KEY="$(python -c "from cryptography.fernet import Fernet;print(Fernet.generate_key().decode())")" \
   SARVAM_API_KEY="sk_..." LLM_PROVIDER_ORDER="sarvam,anthropic,stub"
 fly deploy
 fly ssh console -C "cd /app && PYTHONPATH=backend python -m alembic upgrade head"
-curl https://saral.fly.dev/health
+curl https://saral.fly.dev/health   # liveness
+curl https://saral.fly.dev/ready    # database + redis reachable
 ```
 
 ## Render
@@ -63,7 +68,7 @@ curl https://saral.fly.dev/health
 1. Push the repo to GitHub.
 2. Render dashboard → New → Blueprint → select `render.yaml`. It creates `saral-api`,
    `saral-worker`, `saral-postgres` (PG 16), `saral-redis` (Redis 7).
-3. Set secret env vars on both services: `SESSION_SECRET`, and optionally `SARVAM_API_KEY` /
+3. Set secret env vars on both services: `SESSION_SECRET`, `RM_REQUEST_KEY`, and optionally `SARVAM_API_KEY` /
    `ANTHROPIC_API_KEY` / `LLM_PROVIDER_ORDER`. `DATABASE_URL` / `REDIS_URL` are auto-wired.
 4. Migrations run automatically via `preDeployCommand` (`alembic upgrade head`).
 

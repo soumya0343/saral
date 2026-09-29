@@ -6,11 +6,11 @@ execute, and no write fires without a fresh token re-validation in the same tran
 
     START -> triage -> compliance -> identity -> supervisor -(route)->
         { synthesis                 (respond / injection-blocked -> escalate)
-        | END                       (suspend: awaiting_input / awaiting_confirmation / abandon)
+        | handoff                   (suspend: awaiting_input / awaiting_confirmation / abandon)
         | rag -> synthesis          (information; per-customer scoped retrieval)
         | action -> synthesis       (reads, or a CONFIRMED write executed idempotently)
         | {rag, action} -> synthesis (mixed: parallel fan-out) }
-    synthesis -> END
+    synthesis -> handoff -> END   (any escalation -> a deduplicated request for the RM)
 """
 
 from __future__ import annotations
@@ -21,7 +21,14 @@ from functools import lru_cache
 
 from langgraph.graph import END, START, StateGraph
 
-from saral.actions.confirm import build_pending_write, is_stale, parse_confirmation
+from saral import metrics
+from saral.actions import claim_intake
+from saral.actions.confirm import (
+    build_pending_write,
+    field_name,
+    is_stale,
+    parse_confirmation,
+)
 from saral.agents.action import ActionAgent
 from saral.agents.rag import RagAgent
 from saral.agents.synthesis import COMPLAINT_REPLIES, SynthesisAgent, SynthesisContext
@@ -191,9 +198,9 @@ _OTP_SUFFIX = {
 # customer's relationship manager (RM) for approval and recorded as an artifact. Actual apply is
 # out of scope (a human/RM does it). These messages tell the customer it's been raised.
 _RAISED_TO_RM = {
-    Language.EN: "Your request to {what} has been raised to your relationship manager. It'll be updated once they approve.",  # noqa: E501
-    Language.HI: "{what} का आपका अनुरोध आपके रिलेशनशिप मैनेजर को भेज दिया गया है। उनकी मंज़ूरी मिलते ही इसे अपडेट कर दिया जाएगा।",  # noqa: E501
-    Language.HINGLISH: "{what} ka aapka request aapke relationship manager ko bhej diya gaya hai. Unke approve karte hi ise update kar diya jayega.",  # noqa: E501
+    Language.EN: "Your request to {what} has been raised to your relationship manager, who will act on it within {sla}.",  # noqa: E501
+    Language.HI: "{what} का आपका अनुरोध आपके रिलेशनशिप मैनेजर को भेज दिया गया है, जो {sla} के भीतर इस पर कार्रवाई करेंगे।",  # noqa: E501
+    Language.HINGLISH: "{what} ka aapka request aapke relationship manager ko bhej diya gaya hai, jo {sla} ke andar ispar action lenge.",  # noqa: E501
 }
 # Localized "{what}" describing the requested change, slotted into _RAISED_TO_RM.
 _RM_WHAT = {
@@ -215,18 +222,19 @@ _RM_WHAT = {
 }
 
 
-# Confirmed writes in this set are NOT auto-executed — they're raised to the RM for approval.
-# Contact changes modify the customer's identity record, so they need a human's sign-off; ticket
-# / claim creation (new records, not identity edits) still execute on confirmation.
-_RM_APPROVAL_ACTIONS = {"update_contact"}
+# Confirmed writes in `settings.rm_actions` (default: every write) are NOT executed — they're
+# raised to the customer's relationship manager, the human who owns all writes to customer data.
+
+
+_RM_SLA = "24h"
 
 
 def _rm_message(pending, lang: Language) -> str:
     what_tbl = _RM_WHAT.get(pending.tool, {})
     what = (_t(what_tbl, lang) or pending.tool.replace("_", " ")).format(
-        field=pending.field or "", value=pending.value or ""
+        field=field_name(pending.field, lang), value=pending.value or ""
     )
-    return _t(_RAISED_TO_RM, lang).format(what=what)
+    return _t(_RAISED_TO_RM, lang).format(what=what, sla=_RM_SLA)
 
 
 # Localized action names used inside the step-up prompt.
@@ -340,6 +348,30 @@ def _gate_write(state: RunState, status: str, message: str, **extra) -> dict:
     return _suspend(status, message, **extra)
 
 
+def _clarify_exhausted(state: RunState, action: str, lang: Language) -> dict:
+    """Repeated failed clarifications: stop looping and hand over to a human."""
+    return {
+        "route": "suspend",
+        "status": "escalated",
+        "pending_write": None,
+        "escalation": EscalationRecord(
+            conversation_id=state.conversation_id,
+            tenant_id=state.tenant_id,
+            detected_intent=action,
+            attempted_actions=[action],
+            blocking_reason="clarification_exhausted",
+            transcript_ref=state.conversation_id,
+            sla_target="4h",
+        ),
+        "final_response": ResponsePayload(
+            resolution_status="escalated",
+            message=_t(_CLARIFY_GIVEUP, lang),
+            escalated=True,
+        ),
+        "step_count": 1,
+    }
+
+
 async def identity_node(state: RunState) -> dict:
     """Identity gate: derive purpose-limitation domains and gate writes.
 
@@ -395,6 +427,39 @@ async def identity_node(state: RunState) -> dict:
     # Build (first turn) or reuse (resume) the conversation-anchored PendingWrite.
     pending = state.pending_write
     nonce = state.intent_nonce
+    just_completed = False  # claim facts completed THIS turn: read back, never auto-confirm
+
+    # Claim intake: collect the claim's facts (over as many turns as needed) before step-up.
+    if intent.action == "file_claim":
+        policies = [str(p) for p in state.entities.get("policy_ids") or []]
+        base: dict | None = None
+        if pending is None or pending.tool != "file_claim":
+            nonce = state.intent_nonce + 1
+            base, text, rounds = {}, state.raw_message, 0
+        elif pending.args.get("missing"):
+            base, text = pending.args, state.resume_reply or ""
+            rounds = int(pending.args.get("rounds", 0)) + (1 if state.resume_reply else 0)
+        if base is not None:
+            slots = await claim_intake.fill(text, base, policies)
+            pending = claim_intake.pending_claim(
+                state.conversation_id, {**slots, "rounds": rounds}, nonce, lang
+            )
+            missing = pending.args["missing"]
+            if missing and rounds >= claim_intake.MAX_ROUNDS:
+                return _clarify_exhausted(state, intent.action, lang)
+            if missing:
+                return {
+                    **_gate_write(
+                        state,
+                        "awaiting_input",
+                        claim_intake.ask_prompt(missing, lang, policies),
+                        pending_write=pending,
+                        intent_nonce=nonce,
+                    ),
+                    "allowed_domains": up["allowed_domains"],
+                }
+            just_completed = True
+
     if pending is None:
         nonce = state.intent_nonce + 1
         pending = build_pending_write(
@@ -408,30 +473,31 @@ async def identity_node(state: RunState) -> dict:
             field = _contact_field_hint(state.raw_message)
             attempts = _prior_clarify_count(state.history)
             if attempts >= 2:
-                return {
-                    "route": "suspend",
-                    "status": "escalated",
-                    "pending_write": None,
-                    "escalation": EscalationRecord(
-                        conversation_id=state.conversation_id,
-                        tenant_id=state.tenant_id,
-                        detected_intent=intent.action or "update_contact",
-                        attempted_actions=[intent.action or ""],
-                        blocking_reason="clarification_exhausted",
-                        transcript_ref=state.conversation_id,
-                        sla_target="4h",
-                    ),
-                    "final_response": ResponsePayload(
-                        resolution_status="escalated",
-                        message=_t(_CLARIFY_GIVEUP, lang),
-                        escalated=True,
-                    ),
-                    "step_count": 1,
-                }
+                return _clarify_exhausted(state, intent.action or "update_contact", lang)
             table = _clarify_table(state.raw_message, field, detailed=attempts >= 1)
             return {
                 **_gate_write(state, "awaiting_input", _t(table, lang)),
                 "allowed_domains": up["allowed_domains"],
+            }
+
+    # The same change is already with the RM (open): say so now — no second OTP, no duplicate.
+    fresh = state.pending_write is None or just_completed
+    if pending.tool in get_settings().rm_actions and fresh:
+        dup = await _open_rm_request(state.user_id, pending)
+        if dup is not None:
+            return {
+                "route": "suspend",
+                "status": "resolved",
+                "pending_write": None,
+                "rm_request_id": dup.id,
+                "rm_request_kind": pending.tool,
+                "rm_request_created": False,
+                "final_response": ResponsePayload(
+                    resolution_status="resolved",
+                    message=_t(_REQ_DUPLICATE, lang).format(id=dup.id, sla=dup.sla_target),
+                ),
+                "allowed_domains": up["allowed_domains"],
+                "step_count": 1,
             }
 
     decision = identity_gate(state.auth_level, state.intents)
@@ -489,12 +555,12 @@ async def identity_node(state: RunState) -> dict:
         )
 
     # auth_level == step_up. Confirmed?
-    if parse_confirmation(state.resume_reply or "") == "yes":
+    if not just_completed and parse_confirmation(state.resume_reply or "") == "yes":
         # A contact CHANGE (modifying the customer's identity record) is not executed by the
         # agent — it is raised to the customer's relationship manager (RM) for approval and
         # recorded as an Escalation artifact (blocking_reason=awaiting_manager_approval); a human
         # applies it. Other writes (raise_ticket / file_claim — creating new records) execute.
-        if pending.tool in _RM_APPROVAL_ACTIONS:
+        if pending.tool in get_settings().rm_actions:
             return {
                 "route": "suspend",
                 "status": "escalated",
@@ -509,7 +575,7 @@ async def identity_node(state: RunState) -> dict:
                     blocking_reason="awaiting_manager_approval",
                     transcript_ref=state.conversation_id,
                     pending_action=pending.tool,
-                    sla_target="24h",
+                    sla_target=_RM_SLA,
                 ),
                 "final_response": ResponsePayload(
                     resolution_status="escalated",
@@ -750,6 +816,99 @@ async def synthesis_node(state: RunState) -> dict:
     return update
 
 
+# --- Handoff: every escalation becomes a request for the customer's relationship manager ---
+
+_REQ_REF = {
+    Language.EN: " Your request reference is {id}.",
+    Language.HI: " आपका अनुरोध संदर्भ {id} है।",
+    Language.HINGLISH: " Aapka request reference {id} hai.",
+}
+_REQ_DUPLICATE = {
+    Language.EN: "You already have an open request ({id}) for this with your relationship manager, so I haven't raised it again. They'll act on it within {sla}.",  # noqa: E501
+    Language.HI: "इसके लिए आपका अनुरोध ({id}) पहले से आपके रिलेशनशिप मैनेजर के पास खुला है, इसलिए मैंने इसे दोबारा नहीं भेजा। वे {sla} के भीतर इस पर कार्रवाई करेंगे।",  # noqa: E501
+    Language.HINGLISH: "Iske liye aapka request ({id}) pehle se aapke relationship manager ke paas open hai, isliye maine ise dobara nahi bheja. Woh {sla} ke andar ispar action lenge.",  # noqa: E501
+}
+
+
+def _change_identity(pw) -> dict:
+    """What makes two requested changes 'the same' (dedup identity)."""
+    return {k: v for k, v in pw.args.items() if k not in ("missing", "rounds")}
+
+
+async def _open_rm_request(user_id: str, pending):
+    from saral.rm.requests import dedup_key, get_requests
+
+    key = dedup_key(user_id, pending.tool, _change_identity(pending))
+    try:
+        return await asyncio.to_thread(get_requests().find_open, key)
+    except Exception as e:  # noqa: BLE001 — no store: proceed; persistence still dedups
+        log.warning("rm.lookup_failed", error=str(e))
+        return None
+
+
+def _rm_request_parts(state: RunState) -> tuple[str, dict | None, dict]:
+    """(kind, encrypted-change payload, dedup identity) for this run's escalation."""
+    esc, pw = state.escalation, state.pending_write
+    assert esc is not None
+    if esc.blocking_reason == "awaiting_manager_approval" and pw is not None:
+        args = _change_identity(pw)
+        return pw.tool, {"tool": pw.tool, "field": pw.field, "value": pw.value, "args": args}, args
+    # Anything else is a request for a human to look at this conversation.
+    identity = {"conversation_id": state.conversation_id, "reason": esc.blocking_reason}
+    return "handoff", None, identity
+
+
+async def handoff_node(state: RunState) -> dict:
+    """Raise (or find) the RM request for this run's escalation and give the customer its
+    reference. Deduplicated: the same change asked twice while open returns the open request.
+    A request-store failure never loses the reply — the escalation row still persists."""
+    esc = state.escalation
+    if esc is None or state.rm_request_id:
+        return {}
+    from saral.rm.requests import dedup_key, get_requests
+    from saral.rm.summary import case_summary
+
+    kind, change, identity = _rm_request_parts(state)
+    lang = state.language or Language.EN
+    try:
+        req, created = await asyncio.to_thread(
+            get_requests().raise_request,
+            tenant_id=state.tenant_id,
+            user_id=state.user_id,
+            conversation_id=state.conversation_id,
+            kind=kind,
+            reason=esc.blocking_reason,
+            key=dedup_key(state.user_id, kind, identity),
+            change=change,
+            summary=None,
+            language=str(lang),
+            sla_target=esc.sla_target,
+        )
+        if created:
+            summary = await case_summary(state, kind, esc.blocking_reason)
+            await asyncio.to_thread(get_requests().set_summary, req.id, summary)
+    except Exception as e:  # noqa: BLE001
+        log.error("rm.request_failed", run_id=state.run_id, error=str(e))
+        return {}
+
+    metrics.ESCALATIONS.labels(esc.blocking_reason).inc()
+    metrics.RM_REQUESTS.labels(kind, str(created).lower()).inc()
+    update: dict = {
+        "rm_request_id": req.id,
+        "rm_request_kind": kind,
+        "rm_request_created": created,
+        "escalation": esc.model_copy(update={"request_id": req.id, "user_id": state.user_id}),
+    }
+    if state.final_response is not None:
+        resp = state.final_response.model_copy()
+        if not created and kind != "handoff":
+            resp.message = _t(_REQ_DUPLICATE, lang).format(id=req.id, sla=req.sla_target)
+        elif req.id not in resp.message:
+            resp.message = resp.message.rstrip() + _t(_REQ_REF, lang).format(id=req.id)
+        update["final_response"] = resp
+    return update
+
+
 def _branch(state: RunState):
     if _injection_blocked(state):
         return "synthesis"  # injection → escalate via synthesis
@@ -774,6 +933,7 @@ def _assemble() -> StateGraph:
     g.add_node("rag", rag_node)
     g.add_node("action", action_node)
     g.add_node("synthesis", synthesis_node)
+    g.add_node("handoff", handoff_node)
 
     g.add_edge(START, "triage")
     g.add_edge("triage", "compliance")  # injection + authz gate on every message
@@ -782,11 +942,12 @@ def _assemble() -> StateGraph:
     g.add_conditional_edges(
         "supervisor",
         _branch,
-        {"rag": "rag", "action": "action", "synthesis": "synthesis", "end": END},
+        {"rag": "rag", "action": "action", "synthesis": "synthesis", "end": "handoff"},
 )
     g.add_edge("rag", "synthesis")
     g.add_edge("action", "synthesis")
-    g.add_edge("synthesis", END)
+    g.add_edge("synthesis", "handoff")  # every escalation becomes an RM request
+    g.add_edge("handoff", END)
     return g
 
 

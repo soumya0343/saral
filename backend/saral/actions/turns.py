@@ -65,6 +65,16 @@ async def plan_reply(
             plan.otp_attempts_left = await asyncio.to_thread(attempts_left, s.challenge_id)
         return plan
 
+    if (
+        s.suspend_status == "awaiting_input"
+        and pending is not None
+        and pending.tool == "file_claim"
+        and pending.args.get("missing")
+    ):
+        # Claim intake: the reply fills slots (identity merges them), cancels, or is a new topic.
+        await _claim_reply(plan, reply, user_id, pending)
+        return plan
+
     # An LLM interprets the reply (confirm / reject / unclear / value / correction / other) from
     # the suspend context + history, under a deterministic AND-guard. The write trigger stays
     # deterministic — "confirm" is normalized to the canonical "yes" and identity_node re-parses
@@ -87,6 +97,33 @@ async def plan_reply(
     else:  # correction / reject / other → run fresh; triage + history resolve it
         _topic_switch(plan, reply)
     return plan
+
+
+async def _claim_reply(plan: ReplyPlan, reply: str, user_id: str, pending: PendingWrite) -> None:
+    from saral.actions import claim_intake
+    from saral.actions.confirm import parse_confirmation
+    from saral.agents.triage import classify_intents
+    from saral.schemas import IntentType
+    from saral.tools import mock_backend as mb
+
+    ctx = await asyncio.to_thread(mb.get_customer_context, user_id)
+    policies = [str(p) for p in ctx.get("policy_ids") or []]
+    missing = set(pending.args.get("missing") or [])
+    found = claim_intake.extract(reply, missing=missing, policies=policies)
+    if not found:
+        found = await claim_intake.llm_extract(reply, missing)
+    # Free text only counts as the description when it isn't itself a new request/question.
+    asks = {IntentType.ACTION, IntentType.INFORMATION}
+    if set(found) == {"description"} and (
+        reply.strip().endswith("?") or any(i.type in asks for i in classify_intents(reply))
+    ):
+        found = {}
+    if found:
+        plan.resume_reply = reply  # identity merges these slots into the pending claim
+    elif parse_confirmation(reply) == "no":
+        plan.resume_reply = "no"  # identity abandons the claim (cancelled)
+    else:
+        _topic_switch(plan, reply)
 
 
 def _topic_switch(plan: ReplyPlan, reply: str) -> None:

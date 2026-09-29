@@ -31,6 +31,7 @@ HIGHER_IS_BETTER = [
     "answer_correctness",
     "faithfulness",
     "multi_turn_success",
+    "rm_request_accuracy",
     "resolution_accuracy",
     "cross_lingual_consistency",
 ]

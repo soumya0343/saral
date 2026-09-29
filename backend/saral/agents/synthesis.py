@@ -202,6 +202,40 @@ _DONE = {
 }
 
 
+_REQUEST_KIND = {
+    "update_contact": ("contact details change", "संपर्क विवरण बदलाव", "contact details change"),
+    "file_claim": ("new claim", "नया क्लेम", "naya claim"),
+    "raise_ticket": ("support ticket", "सहायता टिकट", "support ticket"),
+    "handoff": ("request for help", "सहायता का अनुरोध", "help ka request"),
+}
+_REQUEST_STATE = {
+    "open": ("open — your relationship manager is working on it",
+             "खुला है — आपके रिलेशनशिप मैनेजर इस पर काम कर रहे हैं",
+             "open hai — aapke relationship manager is par kaam kar rahe hain"),
+    "done": ("completed", "पूरा हो गया है", "complete ho gaya hai"),
+    "rejected": ("declined", "अस्वीकार कर दिया गया है", "decline ho gaya hai"),
+}
+_NO_REQUESTS = {
+    Language.EN: "You don't have any requests with your relationship manager.",
+    Language.HI: "आपके रिलेशनशिप मैनेजर के पास आपका कोई अनुरोध नहीं है।",
+    Language.HINGLISH: "Aapke relationship manager ke paas aapka koi request nahi hai.",
+}
+_RM_NOTE = {
+    Language.EN: " Note from your RM: {note}",
+    Language.HI: " आपके RM की टिप्पणी: {note}",
+    Language.HINGLISH: " Aapke RM ka note: {note}",
+}
+
+
+def _request_line(r: dict, lang: Language) -> str:
+    kind = _word(_REQUEST_KIND, r.get("kind"), lang)
+    state = _word(_REQUEST_STATE, r.get("status"), lang)
+    end = "।" if lang == Language.HI else "."
+    note = _tl(_RM_NOTE, lang).format(note=r["rm_note"]) if r.get("rm_note") else ""
+    word = "अनुरोध" if lang == Language.HI else "Request"
+    return f"{word} {r.get('id')} ({kind}): {state}{end}{note}"
+
+
 def _tl(table: dict, lang: Language) -> str:
     return table.get(lang) or table[Language.EN]
 
@@ -215,6 +249,8 @@ def _action_summary(rec: ActionRecord, lang: Language) -> str:
             return _tl(_NOT_FOUND, lang).format(what=rec.args["claim_id"])
         if rec.tool == "get_policy_details" and rec.args.get("policy_id"):
             return _tl(_NOT_FOUND, lang).format(what=rec.args["policy_id"])
+        if rec.tool == "get_request_status" and rec.args.get("request_id"):
+            return _tl(_NOT_FOUND, lang).format(what=rec.args["request_id"])
         return _tl(_ACTION_FAILED, lang)
     if rec.tool == "get_claim_status":
         claims = r.get("claims")
@@ -234,6 +270,11 @@ def _action_summary(rec: ActionRecord, lang: Language) -> str:
             return _policy_line(policies[0], lang)
         head = _tl(_N_POLICIES, lang).format(n=len(policies))
         return " ".join([head, *(_policy_line(p, lang) for p in policies)])
+    if rec.tool == "get_request_status":
+        reqs = r.get("requests") or []
+        if not reqs:
+            return _tl(_NO_REQUESTS, lang)
+        return " ".join(_request_line(x, lang) for x in reqs)
     if rec.tool == "file_claim":
         return _tl(_DONE["file_claim"], lang).format(
             id=r.get("claim_id"), status=_word(_CLAIM_WORD, r.get("status"), lang)

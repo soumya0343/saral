@@ -129,3 +129,27 @@ def test_real_write_still_action():
         i.action == "update_contact"
         for i in classify("update my mobile number to 9000000000").intents
     )
+
+
+async def test_romanized_hindi_that_sarvam_calls_english_is_hinglish(monkeypatch):
+    # Seen live: Sarvam LID said "en" for this; two distinctive Hindi words settle it.
+    result, _ = await _run_with(
+        monkeypatch, _FakeSarvam(lang=Language.EN), "mera mobile number badal do 9811122233"
+    )
+    assert result.language == Language.HINGLISH
+    # …while genuine English stays English.
+    result, _ = await _run_with(monkeypatch, _FakeSarvam(lang=Language.EN), "update my number")
+    assert result.language == Language.EN
+
+
+def test_reconcile_keeps_a_pure_complaint_a_complaint():
+    from saral.agents.triage import _reconcile
+    from saral.schemas import Intent, IntentResult, IntentType
+
+    llm = IntentResult(
+        language="hinglish",
+        intents=[Intent(type=IntentType.COMPLAINT), Intent(type=IntentType.INFORMATION)],
+        entities={},
+    )
+    got = _reconcile(llm, "abhi bhi not working, worst service")
+    assert [i.type for i in got.intents] == [IntentType.COMPLAINT]

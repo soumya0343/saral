@@ -81,5 +81,8 @@ def user_exists(user_id: str) -> bool:
 
 
 def _reset_state() -> None:
-    """Test helper: wipe + reseed the store."""
+    """Test helper: wipe + reseed the store (and the RM request queue beside it)."""
+    from saral.rm.requests import get_requests
+
     get_store().reset()
+    get_requests().reset()

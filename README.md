@@ -37,6 +37,12 @@ validated by a labeled evaluation suite with an LLM judge.
   conversation-anchored idempotency key prevents double-writes across crash-resume.
   A pending write's authority is **mortal**: past its TTL it is abandoned, never
   auto-fired, and an orphan reaper closes the run.
+- **The relationship manager owns every write** — Saral never changes customer data. A
+  confirmed change (new mobile, a claim collected slot by slot, a ticket) and every other
+  escalation becomes a request for the customer's RM: requested change encrypted at rest,
+  English case summary, deduplicated while open (asking twice gives the same reference, no
+  second OTP), and the customer can ask for its status in their language. The RM's own system
+  pulls requests and reports outcomes over service-key endpoints.
 - **Event-driven** — the API enqueues runs onto a Redis Streams bus; a separate
   worker consumes them, with checkpoint/resume and partial-failure isolation.
 - **Measured, not vibes** — ~95 labeled scenarios (explanation-groundedness,
@@ -57,19 +63,20 @@ validated by a labeled evaluation suite with an LLM judge.
                                                       │
    START → triage → compliance → identity → supervisor ─route─►  ┐
        ├─ synthesis              (respond / injection-blocked → escalate)
-       ├─ END (suspend)          (write → step-up OTP / read-back confirmation)
+       ├─ handoff (suspend)      (write → step-up OTP / read-back confirmation)
        ├─ rag → synthesis        (information; per-customer scoped retrieval; below
        │                          the score floor → escalate, never invent)
-       ├─ action → synthesis     (reads, or a CONFIRMED write, executed idempotently)
+       ├─ action → synthesis     (reads: claims, policies, the customer's RM requests)
        └─ {rag, action} → synthesis   (mixed intent: parallel fan-out)
                                                       │
-                                            synthesis → END
+                              synthesis → handoff → END
+                              (any escalation → a deduplicated RM request + reference)
 ```
 
 Identity runs before any data read and gates writes; a write suspends the run
 (`awaiting_input` for the OTP, then `awaiting_confirmation` for the read-back) and
 resumes via `POST /conversations/{id}/reply` — re-validating the token before the
-idempotent write fires.
+confirmed change is handed to the RM.
 
 **Agents** ([`backend/saral/agents/`](backend/saral/agents/))
 - `triage` — language + intent + entity detection
@@ -156,7 +163,11 @@ make dev    # API + worker in ONE process (shared mock state) — for frontend d
 | `GET`  | `/conversations/{id}/stream` | SSE: live agent trace + final response |
 | `GET`  | `/conversations/{id}` | full message history |
 | `DELETE` | `/me/data` | self-service right-to-erasure: tombstone PII, sign out; audit chain left intact |
-| `POST` | `/escalations/{id}/resolve` | server-to-server (`X-Service-Key`): the RM's system records who handled a request |
+| `GET` | `/rm/requests?status=open` | server-to-server (`X-Service-Key`): the RM's system pulls requests — requested change decrypted, English case summary |
+| `GET` | `/rm/requests/{id}` | server-to-server: one request |
+| `POST` | `/rm/requests/{id}/status` | server-to-server: `done` / `rejected` + a note the customer sees when they ask |
+| `POST` | `/escalations/{id}/resolve` | server-to-server (legacy): records who handled an escalation |
+| `GET` | `/ready`, `/metrics` | readiness (DB + Redis) and Prometheus metrics |
 | `POST` | `/auth/step-up` | standalone step-up harness |
 | `POST` | `/auth/session` | dev/test only: mint a token for a user id (disabled in prod) |
 | `POST` | `/eval/run`, `GET /eval/report`, `GET /eval/reports` | run (dev, or `X-Service-Key` in prod) + inspect evals |

@@ -35,6 +35,24 @@ class _Listed:
         return {self.key: [r.model_dump() for r in self.rows]}
 
 
+class _Requests:
+    """The customer's RM requests (a named REQ id narrows to it; another customer's id simply
+    isn't found — the query is scoped by the verified user_id)."""
+
+    def __init__(self, user_id: str, request_id: str | None) -> None:
+        from saral.rm.requests import get_requests
+
+        rows = get_requests().list_for_user(user_id, limit=20 if request_id else 5)
+        if request_id:
+            rows = [r for r in rows if r.id == request_id]
+            if not rows:
+                raise ToolError(f"request {request_id} not found")
+        self.rows = rows
+
+    def model_dump(self) -> dict:
+        return {"requests": [r.__dict__ for r in self.rows]}
+
+
 class ActionAgent:
     name = "action"
 
@@ -110,6 +128,12 @@ class ActionAgent:
             else:
                 args = {"user_id": user_id}
                 call = lambda: _Listed("policies", mb.list_policies(user_id))  # noqa: E731
+
+        elif action == "get_request_status":
+            # Only this customer's own RM requests; never the encrypted change or the summary.
+            request_id = entities.get("request_id")
+            args = {"user_id": user_id, **({"request_id": request_id} if request_id else {})}
+            call = lambda: _Requests(user_id, request_id)  # noqa: E731
 
         else:
             return ActionRecord(tool=action, error=f"unknown action '{action}'")

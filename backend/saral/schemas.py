@@ -210,6 +210,8 @@ class EscalationRecord(BaseModel):
     transcript_ref: str
     pending_action: str | None = None
     sla_target: str  # e.g. "4h"
+    user_id: str | None = None
+    request_id: str | None = None  # the RM request this escalation became (saral/rm/requests)
 
 
 # --- Final response (Synthesis output schema) ---

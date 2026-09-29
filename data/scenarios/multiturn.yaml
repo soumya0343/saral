@@ -201,7 +201,7 @@
       expect: { status: awaiting_confirmation, answer_contains: ["9811122233"] }
   expected: { status: awaiting_confirmation, tools: [] }
 
-# ---------------- Writes that Saral executes on confirmation ----------------
+# ---------------- Every write goes to the RM (tickets and claims too) ----------------
 - id: mt_raise_ticket_en
   category: action
   language: en
@@ -212,8 +212,8 @@
     - say: "{otp}"
       expect: { status: awaiting_confirmation }
     - say: "yes"
-      expect: { status: resolved, tools: [raise_ticket] }
-  expected: { status: resolved, tools: [raise_ticket] }
+      expect: { status: escalated, rm_request: raise_ticket }
+  expected: { status: escalated, tools: [], rm_request: raise_ticket }
 
 - id: mt_file_claim_hinglish
   category: action
@@ -221,12 +221,14 @@
   user_id: U1001
   turns:
     - say: "mujhe hospital bill ka naya claim file karna hai"
-      expect: { status: awaiting_input }
+      expect: { status: awaiting_input }  # asks for date, amount, hospital, what happened
+    - say: "kal Fortis hospital mein dengue ka ilaaj hua, bill 38000 rupees"
+      expect: { status: awaiting_input }  # facts complete -> OTP
     - say: "{otp}"
-      expect: { status: awaiting_confirmation }
+      expect: { status: awaiting_confirmation, answer_contains: ["38000", "Fortis"] }
     - say: "haan"
-      expect: { status: resolved, tools: [file_claim] }
-  expected: { status: resolved, tools: [file_claim] }
+      expect: { status: escalated, rm_request: file_claim }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
 
 # ---------------- Mixed read + write in one message ----------------
 - id: mt_mixed_read_write_en

@@ -31,6 +31,10 @@ class Expected(BaseModel):
     # Benign look-alike of an attack ("when will you approve my claim?"): must NOT be blocked
     # by the injection guard. Measures the guard's false-positive rate.
     must_not_block: bool = False
+    # An RM request of this kind (update_contact | file_claim | raise_ticket | handoff) was raised
+    # or found; `rm_duplicate`: it was an already-open request, not a new one.
+    rm_request: str | None = None
+    rm_duplicate: bool = False
 
 
 class Turn(BaseModel):
@@ -122,6 +126,7 @@ class MetricSummary(BaseModel):
     faithfulness: float = 1.0  # no number/id the sources don't contain; LLM claim check (live)
     false_block_rate: float = 0.0  # benign look-alikes wrongly blocked by the injection guard
     multi_turn_success: float = 1.0  # multi-turn scenarios passing every turn expectation
+    rm_request_accuracy: float = 1.0  # the expected RM request (kind / dedup) was raised
     pass_rate_by_language: dict[str, float] = Field(default_factory=dict)
     tokens_total: int = 0
     judge_human_agreement: float | None = None

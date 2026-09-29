@@ -157,6 +157,7 @@ class Settings(BaseSettings):
     llm_deadline_synthesis_s: float = 10.0
     llm_deadline_judge_s: float = 60.0
     checkpoint_backend: Literal["memory", "postgres"] = "memory"
+    worker_metrics_port: int = 9100  # the worker's own /metrics (0 = off)
     worker_concurrency: int = 4  # runs executed at once per worker (same conversation: serial)
     claim_min_idle_ms: int = 30000  # XAUTOCLAIM: reclaim pending entries idle longer than this
     reclaim_batch: int = 10
@@ -166,6 +167,15 @@ class Settings(BaseSettings):
     pending_write_ttl_s: int = 86400  # 24h
     orphan_ttl_s: int = 86400  # suspended-conversation reaper horizon
 
+    # --- Relationship-manager (RM) requests ---
+    # Every escalation becomes a request for the customer's RM; the RM performs all writes to
+    # customer data outside Saral. Writes in this list are raised to the RM after OTP + "yes"
+    # instead of executing (remove one to let Saral execute it against the core system).
+    rm_approval_actions: str = "update_contact,raise_ticket,file_claim"
+    # Fernet key (urlsafe base64, 32 bytes) encrypting the requested change at rest. Dev derives
+    # one from SESSION_SECRET; prod refuses to boot without it.
+    rm_request_key: str = ""
+
     @model_validator(mode="after")
     def _refuse_insecure_prod(self) -> Settings:
         # The mock IdP signs every session with this secret: a known default in prod would let
@@ -174,7 +184,13 @@ class Settings(BaseSettings):
             self.session_secret == _DEV_SESSION_SECRET or len(self.session_secret) < 32
         ):
             raise ValueError("SESSION_SECRET must be set to a random >=32-byte value in prod")
+        if self.app_env == "prod" and not self.rm_request_key:
+            raise ValueError("RM_REQUEST_KEY (Fernet key) must be set in prod")
         return self
+
+    @property
+    def rm_actions(self) -> set[str]:
+        return {a.strip() for a in self.rm_approval_actions.split(",") if a.strip()}
 
     @property
     def cors_origins(self) -> list[str]:

@@ -338,7 +338,7 @@
   xling_group: g_write_ticket
   human_label: true
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [raise_ticket] }
+  expected: { status: escalated, tools: [], rm_request: raise_ticket }
 
 - id: write_ticket_u1002_hi
   category: action
@@ -347,7 +347,7 @@
   message: "एक शिकायत दर्ज करें: मेरी पिछली पेमेंट गलत काटी गई"
   xling_group: g_write_ticket
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [raise_ticket] }
+  expected: { status: escalated, tools: [], rm_request: raise_ticket }
 
 - id: write_ticket_u1002_hinglish
   category: action
@@ -356,7 +356,7 @@
   message: "ek ticket banao: meri payment galat charge hui hai"
   xling_group: g_write_ticket
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [raise_ticket] }
+  expected: { status: escalated, tools: [], rm_request: raise_ticket }
 
 - id: write_ticket_suspend_hinglish
   category: action
@@ -370,29 +370,29 @@
   category: action
   language: en
   user_id: U1001
-  message: "I want to file a new claim for my recent hospitalization"
+  message: "I want to file a new claim for my dengue hospitalisation at Apollo Hospital yesterday, the bill was Rs 45,000"
   xling_group: g_write_claim
   human_label: true
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [file_claim] }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
 
 - id: write_fileclaim_u1001_hi
   category: action
   language: hi
   user_id: U1001
-  message: "मैं एक नया क्लेम दर्ज करना चाहती हूँ"
+  message: "कल अपोलो अस्पताल में डेंगू के इलाज का नया क्लेम दर्ज करना है, बिल 45000 रुपये का था"
   xling_group: g_write_claim
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [file_claim] }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
 
 - id: write_fileclaim_u1001_hinglish
   category: action
   language: hinglish
   user_id: U1001
-  message: "mujhe ek naya claim file karna hai"
+  message: "kal Apollo hospital mein dengue ke ilaaj ka naya claim file karna hai, bill 45000 rupees ka tha"
   xling_group: g_write_claim
   complete_stepup: true
-  expected: { route: action, status: resolved, tools: [file_claim] }
+  expected: { status: escalated, tools: [], rm_request: file_claim }
 
 - id: write_fileclaim_suspend_en
   category: action

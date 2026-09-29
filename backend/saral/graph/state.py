@@ -68,6 +68,11 @@ class RunState(BaseModel):
     actions: list[ActionRecord] = Field(default_factory=list)
     final_response: ResponsePayload | None = None
     escalation: EscalationRecord | None = None
+    # The RM request this run's escalation became, and whether it was new (False = the customer
+    # already had the same request open; they get its reference instead of a duplicate).
+    rm_request_id: str | None = None
+    rm_request_kind: str | None = None
+    rm_request_created: bool = False
 
     # --- write-confirmation + step-up ---
     pending_write: PendingWrite | None = None

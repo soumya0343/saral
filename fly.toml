@@ -5,6 +5,7 @@
 #     DATABASE_URL="postgresql+asyncpg://<user>:<pass>@<fly-pg-host>:5432/saral" \
 #     REDIS_URL="rediss://default:<token>@<upstash-host>:<port>" \
 #     SESSION_SECRET="<32+ byte random string>" \
+#     RM_REQUEST_KEY="<Fernet key: encrypts requested changes at rest; boot fails without it>" \
 #     SARVAM_API_KEY="sk_..." \
 #     LLM_PROVIDER_ORDER="sarvam,anthropic,stub"
 # LLM keys are optional — without them the deterministic stub provider runs the demo.

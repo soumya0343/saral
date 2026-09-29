@@ -14,6 +14,7 @@ from typing import TypeVar
 
 from pydantic import BaseModel
 
+from saral import metrics
 from saral.config import get_settings
 from saral.llm.anthropic import AnthropicProvider
 from saral.llm.base import LLMClient, LLMError, Message
@@ -143,6 +144,10 @@ class FallbackLLM:
                     )
                     last_err = err
                     breaker.failure(loop.time(), hard=not err.retryable)
+                    metrics.LLM_CALLS.labels(provider.name, metrics.llm_outcome(err)).inc()
+                    metrics.BREAKER_OPEN.labels(provider.name).set(
+                        int(breaker.is_open(loop.time()))
+                    )
                     final = (
                         attempt >= s.llm_retry_cap
                         or not err.retryable
@@ -160,7 +165,10 @@ class FallbackLLM:
                     await self._backoff(attempt, err.retry_after, remaining())
                     continue
                 breaker.success()
+                metrics.LLM_CALLS.labels(provider.name, "ok").inc()
+                metrics.BREAKER_OPEN.labels(provider.name).set(0)
                 if is_stub and self.has_real_provider:
+                    metrics.LLM_SERVED_BY_STUB.inc()
                     # Real keys are set but every real model failed: the turn is served by
                     # the deterministic floor. Loud, so free-tier drift is never silent.
                     log.error("llm.served_by_stub", method=method, last_error=str(last_err))

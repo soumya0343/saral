@@ -287,3 +287,79 @@ def test_step_up_grant_expires(api, sql):
         )
     api.post(f"/conversations/{cid}/reply", headers=h, json={"content": "yes"})
     assert str(api.enqueued[-1].auth_level) == "session"  # expired -> OTP must be re-earned
+
+
+# --- Phase 4: escalation rows link to their RM request; erasure reaches the RM queue ---------
+
+
+def test_escalation_row_links_to_its_rm_request(api):
+    import asyncio
+
+    from sqlalchemy import select
+
+    from saral.db.models import Escalation
+    from saral.db.repository import persist_run
+    from saral.db.session import get_sessionmaker
+    from saral.graph.state import RunState
+    from saral.schemas import EscalationRecord, ResponsePayload
+
+    login = api.post("/customers", json={"name": "Ira", "mobile": "9123456783"}).json()
+    s = login["session"]
+    h = {"Authorization": f"Bearer {s['tokens']['access_token']}"}
+    cid = _new_convo(api, h)
+    state = RunState(
+        run_id="run-rm-1",
+        conversation_id=cid,
+        user_id=s["user_id"],
+        raw_message="update my number",
+        status="escalated",
+        final_response=ResponsePayload(resolution_status="escalated", message="raised"),
+        escalation=EscalationRecord(
+            conversation_id=cid, tenant_id="t_demo", detected_intent="update_contact",
+            blocking_reason="awaiting_manager_approval", transcript_ref=cid, sla_target="24h",
+            user_id=s["user_id"], request_id="REQ424242",
+        ),
+    )
+
+    from saral.db.session import get_engine
+
+    async def check():
+        try:
+            await persist_run(state)
+            async with get_sessionmaker()() as session:
+                return (
+                    await session.scalars(
+                        select(Escalation).where(Escalation.conversation_id == cid)
+                    )
+                ).one()
+        finally:
+            await get_engine().dispose()
+
+    # The cached engine belongs to the API client's loop; use a fresh one on this loop.
+    get_sessionmaker.cache_clear()
+    get_engine.cache_clear()
+    try:
+        row = asyncio.run(check())
+    finally:
+        get_sessionmaker.cache_clear()
+        get_engine.cache_clear()
+    assert row.request_id == "REQ424242" and row.user_id == s["user_id"]
+
+
+def test_erasure_reaches_the_rm_request_queue(api):
+    from saral.rm.requests import get_requests
+
+    login = api.post("/customers", json={"name": "Neel", "mobile": "9123456782"}).json()
+    s = login["session"]
+    h = {"Authorization": f"Bearer {s['tokens']['access_token']}"}
+    _new_convo(api, h)
+    req, _ = get_requests().raise_request(
+        tenant_id="t_demo", user_id=s["user_id"], conversation_id="c", kind="update_contact",
+        reason="awaiting_manager_approval", key="erase-me",
+        change={"field": "mobile", "value": "9000000001"}, summary="asked to change mobile",
+        language="en", sla_target="24h",
+    )
+    r = api.delete("/me/data", headers=h)
+    assert r.status_code == 200 and r.json()["erased"]["rm_requests"] == 1
+    row = get_requests().get_for_rm(req.id)
+    assert row["requested_change"] is None and row["summary"] == "[erased]"

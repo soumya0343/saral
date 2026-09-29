@@ -18,7 +18,8 @@ ones marked **(repro'd)** were confirmed by running the code during the audit.
 | 2 — Honest eval | ✅ done | Judge sees the reply · reply-level metrics (language match, answer correctness, faithfulness, false-block rate, multi-turn, pass by language) · offline + live tiers (tier derived from config) · pinned live judge (different family, no fallback, abort + `--resume`) · 25 multi-turn conversations driven through the API's own resume logic · 34-case injection set (attacks + benign look-alikes) · human labels bound to exact live replies (κ only from those) · CI gate vs committed baseline (`data/eval_baselines/offline.json`). |
 | 2 — first live run | ✅ 22-scenario sample (2026-09-29) | judge `groq:qwen/qwen3.8-27b` (pinned) · pass 63.6% (EN 71% · HI 50% · Hinglish 71%) · language match 91% · answer correctness 78% · faithfulness 100% · false-block 100% on the 2 look-alikes sampled · p50/p95 2.5 s / 22 s · 36k tokens. Judge **not yet validated** (0 human labels): run `make eval-labels` and label. Live-only defects found → Phase 3: **(L1)** LLM triage drops `get_claim_status` in Hindi/mixed messages and retrieval then answers about a *different* claim (CLM2010 for a CLM2001 question) — retrieval must honour the claim id asked about; **(L2)** Hindi "what does my policy cover" mis-routed to a policy lookup, English "Which policy ID?" reply; **(L3)** LLM phrasing drops the clause number ("6.2") from correct lapse explanations; **(L4)** p95 22 s — Gemini 503s + Groq 429s under a sequential suite. |
 | 3 — Differentiator quality | ✅ mostly (see "Phase 3 — outcome") | L1–L3 fixed; 3.1/3.5/3.6/3.7/3.8 done; 3.2 without pgvector; 3.4 without NLI; 3.3 floor target not reachable with free local models; 3.9 rules plateau ~63% on blind attacks — classifier needed. Offline pass 63.6% → 87.0%, false blocks 50% → 0%. |
-| 4 → 7 | ⏳ next | Phase 4 (RM request quality) next. Open from Phase 3: injection classifier (needs HF licence), answerability check for the floor, pgvector if scale needs it. |
+| 4 — Close the product loops | ✅ (see "Phase 4 — outcome") | Every escalation → complete, encrypted, deduplicated, queryable RM request with an English case summary; RM owns all writes; claim intake slot-filling; complaint set; Prometheus + `/ready`. OTel deferred. |
+| 5 → 7 | ⏳ next | Phase 5 (pick adjacent problems; recommended B claim pre-adjudication, C lapse prevention). Open from Phase 3: injection classifier (needs HF licence), answerability check for the floor. |
 
 Open items found while implementing: ~~the capability guard suppresses writes message-wide~~
 (fixed in 3.6), Gemini free Flash is often overloaded
@@ -68,7 +69,7 @@ Legend: ✅ works as described · 🟡 partial / works only on some paths · ❌
 | Hybrid RAG (e5 + BM25 + RRF), per-customer hard pre-filter | 🟡 | Pre-filter design is right. Chunking drops headings, the score floor is off, and only 3 hero customers have documents (D1–D3). |
 | Synthesis: deterministic draft + LLM rephrase + numeric/ID grounding check | 🟡 | Fallback text is English-only and dumps the top chunk. The grounding check ignores polarity (D4, D5). |
 | Idempotent writes (conversation-anchored keys) | ✅ | [actions/confirm.py](../backend/saral/actions/confirm.py) and [tools/store.py](../backend/saral/tools/store.py). |
-| RM request on escalation (human RM approves and performs all data writes) | 🟡 | **By design:** the agent never applies identity-record changes; it creates a backend request for the RM. Gap: the request row does not contain the requested change, so the RM cannot act on it (D12). |
+| RM request on escalation (human RM approves and performs all data writes) | ✅ (Phase 4) | **By design:** the agent never writes customer data; every escalation becomes a complete, encrypted, deduplicated, queryable RM request (D12 closed in Phase 4). |
 | Redis Streams run bus, consumer group, XAUTOCLAIM | 🟡 | Works. One run at a time per worker, no DLQ, no MAXLEN (R5, S10). |
 | Checkpoint/crash-resume | ❌ | The Postgres saver is never installed and the app silently falls back to memory (R2). |
 | SSE trace stream | 🟡 | Uses pub/sub with no replay and no auth. Leaks PII and the OTP (R6, S3). |
@@ -616,6 +617,31 @@ The judge is still **unvalidated** (0 human labels) — `make eval-labels` is th
 | 4.5 | Complaint path: empathy + offer ticket + escalate on repeat/severity | The complaint scenario set passes. |
 | 4.6 | Observability: OTel traces per node, Prometheus metrics (latency per node/provider, 429s, breaker state, escalations by reason), `/ready` probe | A Grafana/Fly metrics dashboard or JSON endpoint shows them. |
 
+#### Phase 4 — outcome (2026-09-30)
+
+| # | State | What shipped |
+|---|---|---|
+| 4.3 | ✅ | **Every escalation is a request for the RM** (`saral/rm/requests.py`, table `rm_requests` beside the core-system store): customer ref, kind (`update_contact` / `file_claim` / `raise_ticket` / `handoff`), reason, SLA, status `open`/`done`/`rejected`, RM note for the customer. The requested change (field + new value, claim facts, ticket subject) is **Fernet-encrypted at rest** (`RM_REQUEST_KEY`; prod refuses to boot without it) and decrypted only by the service-key endpoints `GET /rm/requests`, `GET /rm/requests/{id}`, `POST /rm/requests/{id}/status`. **Dedup:** unique partial index on the change's key while open — the same ask is caught *before* a second OTP and answered with the open request's reference. New graph node `handoff` raises the request for any escalation and gives the customer its reference; migration 0009 links `escalations.request_id` / `user_id`. Customer tool `get_request_status` ("मेरे अनुरोध की स्थिति?") shows status + RM note in their language; another customer's id is simply not found. Erasure tombstones the change and summary. **Decision 6 taken:** the RM owns *all* writes — `file_claim` and `raise_ticket` are RM requests too (`RM_APPROVAL_ACTIONS`, reversible). |
+| 4.1 | ✅ | English case summary on every request (`saral/rm/summary.py`): customer, chat language, redacted words, what was requested (never the value), intents, tools tried, compliance blocks, relevant sources, why it escalated. Rewritten by the free synthesis chain when available, kept only if every number/id traces to the facts. |
+| 4.4 | ✅ | Claim intake (`actions/claim_intake.py`): policy (asked only when the customer holds several), incident date (dd/mm/yyyy, "12 Sep", "कल"/"kal"/"yesterday"; no future / >3-year dates), amount (₹, "1.2 lakh", "45 हज़ार"), hospital/garage, what happened — over as many turns as needed, localized asks, cancel / topic switch honoured, a human after 3 rounds. Read-back lists every fact; the RM request carries them structured. An optional LLM pass fills gaps, re-validated. |
+| 4.5 | ✅ | Complaint path (from 3.6) + Hindi/Hinglish complaint words; scenario set EN/HI/Hinglish: empathy + ticket offer, escalation to an RM `handoff` on repeat. |
+| 4.6 | ◐ | Prometheus: `saral_node_seconds{node}`, `saral_llm_calls_total{provider,outcome=ok\|rate_limited\|timeout\|error}`, `saral_llm_breaker_open{provider}`, `saral_llm_served_by_stub_total`, `saral_escalations_total{reason}`, `saral_rm_requests_total{kind,created}`, `saral_runs_total{status}`. API `/metrics` + `/ready` (DB + Redis); the worker serves its own on `WORKER_METRICS_PORT`. **OTel traces deferred** — structured logs already carry run_id per node. |
+| 4.2 | — | Out of scope by decision (no RM console). |
+
+**Offline tier:** 171 scenarios (17 new in `data/scenarios/rm_requests.yaml`) · pass 88.3% · RM-request accuracy 100% · every other gated metric at or above the Phase 3 baseline.
+
+**Live tier (16 Phase 4 scenarios, real free models):** first run 10/16 — it found three real
+bugs the offline tier can't see, all fixed with regression tests: Sarvam LID calls short
+romanized Hindi ("mera mobile number badal do") English, so Hinglish customers got English
+read-backs (now: ≥2 distinctive Hindi words override an `en` verdict); the Hindi read-back said
+"पंजीकृत mobile" (field names now localized); the LLM added an info intent to a repeat Hinglish
+complaint so it never escalated (`_reconcile` keeps a pure complaint a complaint). The other
+misses were the judge not knowing that handing a confirmed change to the RM is the correct
+outcome, and a harness transcript showing a bare "yes" where OTP had been verified — the judge
+instructions now describe the RM design (so live numbers before/after this change aren't
+strictly comparable) and the transcript says "[verified with OTP] yes". Re-run of the six:
+6/6. Judge still unvalidated (0 human labels).
+
 ### Phase 5 — Adjacent problems (pick 2–3; ≈1–2 weeks each)
 
 - **B · Claim-intake copilot with pre-adjudication:** exclusion/sub-limit checker over the
@@ -780,8 +806,8 @@ Jev (rejected, paid): [TypeSafe](https://typesafe.ai/blog/introducing-system-one
    single-turn + 25 multi-turn ≈ 400–600 calls with judge + entailment)?
 5. **Retrieval store:** move to pgvector (recommended, since Postgres is already there) vs keep
    in-memory plus a disk cache.
-6. **RM scope:** does the RM own *all* data writes (`raise_ticket` and `file_claim` also become
-   RM requests), or only identity-record changes (`update_contact`, as coded today)?
+6. ~~**RM scope**~~ — decided in Phase 4: the RM owns *all* writes (`RM_APPROVAL_ACTIONS`
+   defaults to all three; remove one to let Saral execute it).
 7. **Where local models run:** the API/worker box (needs ~2–3 GB RAM for the Phase 6 local set),
    or a separate free inference host (Hugging Face Space CPU / Oracle Always Free ARM, subject to
    current terms)?

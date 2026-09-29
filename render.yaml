@@ -1,6 +1,6 @@
 # render.yaml — Saral on Render (Blueprint).
 # Set secret env vars in the Render dashboard before first deploy:
-#   SESSION_SECRET (required), SARVAM_API_KEY / ANTHROPIC_API_KEY / LLM_PROVIDER_ORDER (optional).
+#   SESSION_SECRET + RM_REQUEST_KEY (required), SARVAM_API_KEY / ANTHROPIC_API_KEY / LLM_PROVIDER_ORDER (optional).
 # DATABASE_URL and REDIS_URL are wired automatically from the managed services below.
 
 services:
@@ -25,6 +25,7 @@ services:
       - { key: DATABASE_URL, fromDatabase: { name: saral-postgres, property: connectionString } }
       - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
       - { key: SESSION_SECRET, sync: false }
+      - { key: RM_REQUEST_KEY, sync: false }
       - { key: SARVAM_API_KEY, sync: false }
       - { key: ANTHROPIC_API_KEY, sync: false }
       - { key: LLM_PROVIDER_ORDER, sync: false }
@@ -50,6 +51,7 @@ services:
       - { key: DATABASE_URL, fromDatabase: { name: saral-postgres, property: connectionString } }
       - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
       - { key: SESSION_SECRET, sync: false }
+      - { key: RM_REQUEST_KEY, sync: false }
       - { key: SARVAM_API_KEY, sync: false }
       - { key: ANTHROPIC_API_KEY, sync: false }
       - { key: LLM_PROVIDER_ORDER, sync: false }

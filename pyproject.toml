@@ -24,6 +24,8 @@ dependencies = [
     "pyjwt>=2.10",
     "pyyaml>=6.0",
     "langgraph-checkpoint-postgres>=2.0",
+    "cryptography>=44",
+    "prometheus-client>=0.21",
 ]
 
 [project.optional-dependencies]

@@ -147,7 +147,8 @@
   language: en
   user_id: U1001
   message: "Please raise a ticket: my last payment was charged incorrectly"
-  expected: { route: action, status: resolved, tools: [raise_ticket] }
+  complete_stepup: true
+  expected: { status: escalated, tools: [], rm_request: raise_ticket }
 
 # ---------------- Compliance (unauthorized; multilingual triple) ----------------
 - id: comp_unauth_claim_en

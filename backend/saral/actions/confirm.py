@@ -82,11 +82,24 @@ _READ_BACK = {
 _YESNO = {Language.EN: " (yes/no)", Language.HI: " (हाँ/नहीं)", Language.HINGLISH: " (haan/nahi)"}
 
 
+FIELD_NAME = {
+    "mobile": {
+        Language.EN: "mobile", Language.HI: "मोबाइल नंबर", Language.HINGLISH: "mobile number"
+    },
+    "email": {Language.EN: "email", Language.HI: "ईमेल", Language.HINGLISH: "email"},
+}
+
+
+def field_name(field: str | None, lang: Language) -> str:
+    names = FIELD_NAME.get(field or "")
+    return (names.get(lang) or names[Language.EN]) if names else (field or "")
+
+
 def _read_back(tool: str, field: str | None, value: str | None, lang: Language) -> str:
     table = _READ_BACK.get(tool)
     if not table:
         return f"Execute {tool} — confirm?{_YESNO.get(lang, _YESNO[Language.EN])}"
-    body = table.get(lang, table[Language.EN]).format(field=field, value=value)
+    body = table.get(lang, table[Language.EN]).format(field=field_name(field, lang), value=value)
     return body + _YESNO.get(lang, _YESNO[Language.EN])
 
 

@@ -11,6 +11,7 @@ from saral.tools import mock_backend as mb
 # Actions that change state or expose account data require an ownership check.
 _OWNERSHIP_GATED = {
     "get_claim_status", "get_policy_details", "update_contact", "raise_ticket", "file_claim",
+    "get_request_status",
 }
 
 
@@ -19,8 +20,9 @@ def check_authorization(user_id: str, action: str, entities: dict) -> tuple[bool
     if action not in _OWNERSHIP_GATED:
         return False, f"unknown or non-permitted action '{action}'"
 
-    # update_contact / raise_ticket / file_claim act on the requester's own account.
-    if action in ("update_contact", "raise_ticket", "file_claim"):
+    # update_contact / raise_ticket / file_claim act on the requester's own account;
+    # get_request_status reads only the requester's own RM requests (scoped by user_id).
+    if action in ("update_contact", "raise_ticket", "file_claim", "get_request_status"):
         return True, "self-service action on own account"
 
     if action == "get_policy_details":

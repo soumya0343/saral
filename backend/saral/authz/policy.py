@@ -31,6 +31,8 @@ _ACTION_DOMAINS: dict[str, set[DataDomain]] = {
     "update_contact": {DataDomain.PROFILE_ACCOUNT},
     "raise_ticket": {DataDomain.INTERACTION_HISTORY},
     "file_claim": {DataDomain.CLAIMS},
+    # The customer's own requests to their RM (status only — never the encrypted change).
+    "get_request_status": {DataDomain.INTERACTION_HISTORY},
 }
 
 # An information (FAQ/policy) question may read the customer's readable domains, but never
