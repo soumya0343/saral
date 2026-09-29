@@ -72,7 +72,9 @@ class Settings(BaseSettings):
         "gemini:gemini-3.8-flash,gemini:gemini-3.5-flash-lite,groq:openai/gpt-oss-120b,stub"
     )
     llm_role_triage: str = "groq:openai/gpt-oss-20b,groq:qwen/qwen3.8-27b,stub"
-    llm_role_judge: str = "groq:openai/gpt-oss-120b,stub"
+    # Judge: a DIFFERENT model family from synthesis (Gemini, falling back to gpt-oss) so it
+    # doesn't grade its own writing. The live eval pins the first entry (no fallback).
+    llm_role_judge: str = "groq:qwen/qwen3.8-27b,stub"
     anthropic_model: str = "claude-sonnet-4-6"
     sarvam_model: str = "sarvam-30b"
     # Use Sarvam /text-lid for language detection. When the key is absent or
@@ -133,6 +135,7 @@ class Settings(BaseSettings):
     # trusted there — that language's resolution metric is gated behind human review.
     # Languages with too few/unanimous labels are also treated as un-validated.
     judge_kappa_floor: float = 0.6
+    eval_live_gap_s: float = 2.0  # pause between live scenarios (free-tier RPM headroom)
 
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard

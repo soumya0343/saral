@@ -20,12 +20,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
-from saral.actions.resume import interpret_resume
+from saral.actions.turns import SuspendState, plan_reply
 from saral.api.deps import current_customer, owned_conversation, require_service_key
 from saral.api.ratelimit import per_customer, per_ip
-from saral.auth import SessionClaims, request_step_up, verify_step_up
+from saral.auth import SessionClaims, request_step_up
 from saral.auth.sessions import TokenPair, issue_tokens
-from saral.auth.stepup import attempts_left
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.db.models import Conversation, Message
@@ -318,68 +317,44 @@ async def reply(
         raise HTTPException(status_code=409, detail="conversation is not awaiting a reply")
 
     pending = PendingWrite(**convo.pending_write) if convo.pending_write else None
-    original = convo.original_message or body.content
     history = await _history(db, convo.id)
     await _append_message(db, convo, "user", body.content)
 
+    plan = await plan_reply(
+        SuspendState(
+            suspend_status=convo.suspend_status,
+            pending_write=pending,
+            challenge_id=convo.challenge_id,
+            original_message=convo.original_message,
+            step_up_granted=_step_up_granted(convo, pending),
+        ),
+        body.content,
+        convo.user_id,
+        history,
+    )
+    if plan.grant_step_up and pending is not None:
+        convo.step_up_for = pending.idempotency_key
+        convo.step_up_until = datetime.now(UTC) + timedelta(
+            seconds=get_settings().step_up_grant_ttl_s
+        )
     req = RunRequest(
         run_id=uuid.uuid4().hex,
         conversation_id=convo.id,
         user_id=convo.user_id,
         tenant_id=convo.tenant_id,
-        auth_level=AuthLevel.STEP_UP if _step_up_granted(convo, pending) else AuthLevel.SESSION,
-        message=original,  # re-send the original so the write re-evaluates (not the reply)
+        auth_level=plan.auth_level,
+        message=plan.message,
         history=history,
         known_entities=await asyncio.to_thread(mb.get_customer_context, convo.user_id),
-        pending_write=pending,
-        intent_nonce=pending.intent_nonce if pending else 0,
+        pending_write=plan.pending_write,
+        intent_nonce=plan.intent_nonce,
         prev_language=convo.language,
         reply_text=body.content,  # the customer's actual words this turn (language detection)
+        resume_reply=plan.resume_reply,
+        challenge_response=plan.challenge_response,
+        challenge_id=plan.challenge_id,
+        otp_attempts_left=plan.otp_attempts_left,
     )
-
-    if convo.suspend_status == "awaiting_input" and convo.challenge_id:
-        # Step-up OTP reply. A one-time code is a security credential — verified deterministically,
-        # never interpreted by an LLM. Success grants step-up for this pending write, briefly.
-        if await asyncio.to_thread(verify_step_up, convo.challenge_id, body.content, convo.user_id):
-            convo.step_up_for = pending.idempotency_key if pending else None
-            convo.step_up_until = datetime.now(UTC) + timedelta(
-                seconds=get_settings().step_up_grant_ttl_s
-            )
-            req.auth_level = AuthLevel.STEP_UP
-        else:
-            # Wrong code: the graph re-prompts while tries remain, escalates once burned.
-            req.challenge_response = body.content
-            req.challenge_id = convo.challenge_id
-            req.otp_attempts_left = await asyncio.to_thread(attempts_left, convo.challenge_id)
-    else:
-        # An LLM interprets the reply (confirm / reject / unclear / value / correction / other)
-        # from the suspend context + history, under a deterministic AND-guard. The write trigger
-        # stays deterministic — a "confirm" is normalized to the canonical "yes" and
-        # identity_node re-parses yes/no before acting.
-        verdict = await interpret_resume(
-            convo.suspend_status, pending, original, body.content, history
-        )
-        if convo.suspend_status == "awaiting_confirmation":
-            if verdict.kind == "confirm":
-                req.resume_reply = "yes"
-            elif verdict.kind == "reject":
-                req.resume_reply = "no"  # identity abandons the pending write (cancelled)
-            elif verdict.kind == "unclear":
-                # Mixed yes/no ("haan nahi"): keep the pending write; identity re-parses this
-                # reply as unclear and re-asks the read-back instead of acting on it.
-                req.resume_reply = body.content
-            else:  # value / correction / other → topic switch: drop pending, run fresh
-                req.message = body.content
-                req.pending_write = None
-                req.intent_nonce = 0
-        else:  # awaiting_input clarification (missing contact value)
-            if verdict.kind == "value":
-                # Fold the value into the original so triage/identity re-extract (or flag invalid).
-                req.message = f"{original} {body.content}".strip()
-            else:  # correction / reject / other → run fresh; triage + history resolve it
-                req.message = body.content
-                req.pending_write = None
-                req.intent_nonce = 0
 
     # Clear suspend custody now; the worker re-sets it if the run suspends again. Commit BEFORE
     # enqueueing so this write can't land after (and overwrite) the worker's new suspend state.

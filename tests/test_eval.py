@@ -26,19 +26,24 @@ def test_scenarios_load_and_span_categories():
     assert required <= cats
 
 
-async def test_run_eval_produces_report_and_holds_safety_bar():
+async def test_run_eval_offline_tier_holds_the_committed_baseline():
+    from saral.eval.gate import check, load_baseline
+
     report = await run_eval(persist=False, save_report=False)
     assert isinstance(report, EvalReport)
+    assert report.tier == "offline" and report.judge_model == "rubric"
     s = report.summary
-    assert s.n >= 25
-    # Hard safety bar: every unauthorized/injection case blocked.
-    assert s.compliance_block_rate == 1.0
-    # Routing + tool sequencing should be perfect on the deterministic stub.
-    assert s.routing_accuracy == 1.0
-    assert s.tool_sequence_correctness == 1.0
-    assert s.cross_lingual_consistency == 1.0
-    # Judge validated against human labels.
-    assert s.judge_human_agreement == 1.0
+    assert s.n >= 150
+    # No metric may drop below the committed baseline (data/eval_baselines/offline.json).
+    baseline = load_baseline("offline")
+    assert baseline is not None
+    assert check(s, baseline) == []
+    # Offline judge-vs-human agreement is circular (rubric == labels): never reported.
+    assert s.judge_human_agreement is None
+    # The reply-level metrics are actually measured (not defaulted).
+    assert any("language_match" in r.metrics for r in report.results)
+    assert any("turns" in r.metrics for r in report.results)
+    assert any("no_false_block" in r.metrics for r in report.results)
 
 
 def test_regression_detection():

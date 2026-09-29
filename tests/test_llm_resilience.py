@@ -143,3 +143,19 @@ async def test_slow_first_provider_leaves_budget_for_the_next():
     fast = _Scripted("groq", ["on time"])
     llm = FallbackLLM([slow, fast, StubProvider()], deadline_s=6)
     assert await llm.complete(MSG) == "on time"  # slow got ~half the budget, not all of it
+
+
+@respx.mock
+async def test_invalid_json_mode_output_is_retryable():
+    """Groq's 400 json_validate_failed is the model's output failing, not a bad request."""
+    from saral.llm.openai_compat import OpenAICompatProvider
+
+    respx.post("https://llm.test/v1/chat/completions").mock(
+        return_value=httpx.Response(
+            400, json={"error": {"code": "json_validate_failed", "message": "Failed to validate"}}
+        )
+    )
+    p = OpenAICompatProvider(base_url="https://llm.test/v1", api_key="k", model="m", name="t")
+    with pytest.raises(LLMError) as e:
+        await p.complete(MSG)
+    assert e.value.retryable is True

@@ -16,6 +16,16 @@ type Summary = {
   latency_p50_ms: number;
   latency_p95_ms: number;
   judge_human_agreement: number | null;
+  language_match: number;
+  answer_correctness: number;
+  faithfulness: number;
+  false_block_rate: number;
+  multi_turn_success: number;
+  explanation_groundedness: number;
+  pass_rate_by_language: Record<string, number>;
+  judge_kappa_by_language: Record<string, number>;
+  judge_untrusted_languages: string[];
+  tokens_total: number;
 };
 type ScenarioResult = {
   scenario_id: string;
@@ -24,10 +34,18 @@ type ScenarioResult = {
   route: string | null;
   status: string | null;
   latency_ms: number;
+  language: string;
+  reply: string;
+  metrics: Record<string, boolean>;
+  failed_turns: number[];
+  error: string | null;
 };
 type Report = {
   config_version: string;
   created_at: string;
+  tier: "offline" | "live";
+  judge_model: string;
+  kappa_note: string;
   summary: Summary;
   results: ScenarioResult[];
   regressions: Record<string, number>;
@@ -36,13 +54,19 @@ type Report = {
 
 const METRICS: [keyof Summary, string][] = [
   ["pass_rate", "Pass rate"],
+  ["language_match", "Reply in the customer's language"],
+  ["answer_correctness", "Answer correctness (required facts + source)"],
+  ["faithfulness", "Faithfulness (no unsupported numbers / claims)"],
+  ["explanation_groundedness", "Explanation cites the customer's own documents"],
+  ["multi_turn_success", "Multi-turn conversations"],
   ["routing_accuracy", "Routing accuracy"],
   ["tool_sequence_correctness", "Tool-sequence correctness"],
-  ["compliance_block_rate", "Compliance block rate"],
-  ["groundedness", "Groundedness"],
-  ["resolution_accuracy", "Resolution accuracy"],
+  ["groundedness", "Groundedness (has citations)"],
+  ["resolution_accuracy", "Resolution accuracy (judge)"],
   ["cross_lingual_consistency", "Cross-lingual consistency"],
 ];
+
+const LANG_LABEL: Record<string, string> = { en: "English", hi: "Hindi", hinglish: "Hinglish" };
 
 function Bar({ label, value, target }: { label: string; value: number; target?: boolean }) {
   const pct = Math.round(value * 100);
@@ -88,7 +112,9 @@ export default function EvalDashboard() {
         setError(
           r.status === 404 || r.status === 401
             ? "Running the suite over HTTP is disabled on this deployment. Run `make eval` instead."
-            : `Eval run failed (${r.status}).`,
+            : r.status === 409
+              ? "This server uses real models: run the live eval from the CLI (`make eval-live`)."
+              : `Eval run failed (${r.status}).`,
         );
         return;
       }
@@ -118,16 +144,39 @@ export default function EvalDashboard() {
           No report yet ({error}). Click “Run eval”.
         </p>
       )}
+      {error && report && <p className="mt-4 text-sm text-amber-600">{error}</p>}
 
       {report && (
         <>
           <p className="mt-2 text-sm text-neutral-500">
+            <span
+              className={`mr-1 rounded px-1.5 py-0.5 text-xs font-medium ${
+                report.tier === "live"
+                  ? "bg-emerald-100 text-emerald-800 dark:bg-emerald-950 dark:text-emerald-300"
+                  : "bg-neutral-200 text-neutral-700 dark:bg-neutral-800 dark:text-neutral-300"
+              }`}
+              title={
+                report.tier === "live"
+                  ? "Real free models, judged by a pinned LLM judge"
+                  : "Stub LLM + hashing embedder: deterministic plumbing check, not model quality"
+              }
+            >
+              {report.tier ?? "offline"}
+            </span>
             config <span className="font-mono">{report.config_version}</span> ·{" "}
-            {report.summary.n} scenarios · p50/p95 {report.summary.latency_p50_ms}/
-            {report.summary.latency_p95_ms} ms
-            {report.summary.judge_human_agreement != null &&
-              ` · judge↔human ${Math.round(report.summary.judge_human_agreement * 100)}%`}
+            {report.summary.n} scenarios · judge <span className="font-mono">{report.judge_model}</span>{" "}
+            · p50/p95 {report.summary.latency_p50_ms}/{report.summary.latency_p95_ms} ms
+            {report.summary.tokens_total > 0 && ` · ${report.summary.tokens_total} tokens`}
           </p>
+          {report.kappa_note && (
+            <p className="mt-1 text-xs text-neutral-400">
+              Judge validation: {report.kappa_note}
+              {Object.keys(report.summary.judge_kappa_by_language ?? {}).length > 0 &&
+                ` · κ ${JSON.stringify(report.summary.judge_kappa_by_language)}`}
+              {(report.summary.judge_untrusted_languages ?? []).length > 0 &&
+                ` · not validated: ${report.summary.judge_untrusted_languages.join(", ")}`}
+            </p>
+          )}
 
           {Object.keys(report.regressions).length > 0 && (
             <div className="mt-4 rounded-lg border border-red-300 bg-red-50 p-3 text-sm text-red-700 dark:bg-red-950/40">
@@ -139,13 +188,32 @@ export default function EvalDashboard() {
           )}
 
           <section className="mt-6">
+            <h2 className="mb-2 text-sm font-medium text-neutral-500">Safety</h2>
+            <Bar
+              label="Attacks blocked"
+              value={report.summary.compliance_block_rate}
+              target
+            />
+            <Bar
+              label="Benign look-alikes NOT blocked (1 − false-block rate)"
+              value={1 - (report.summary.false_block_rate ?? 0)}
+              target
+            />
+          </section>
+
+          {report.summary.pass_rate_by_language && (
+            <section className="mt-6">
+              <h2 className="mb-2 text-sm font-medium text-neutral-500">Pass rate by language</h2>
+              {Object.entries(report.summary.pass_rate_by_language).map(([lang, v]) => (
+                <Bar key={lang} label={LANG_LABEL[lang] ?? lang} value={v} />
+              ))}
+            </section>
+          )}
+
+          <section className="mt-6">
+            <h2 className="mb-2 text-sm font-medium text-neutral-500">Quality</h2>
             {METRICS.map(([key, label]) => (
-              <Bar
-                key={key}
-                label={label}
-                value={report.summary[key] as number}
-                target={key === "compliance_block_rate"}
-              />
+              <Bar key={key} label={label} value={(report.summary[key] as number) ?? 0} />
             ))}
           </section>
 
@@ -159,18 +227,42 @@ export default function EvalDashboard() {
                     <th className="p-2">Category</th>
                     <th className="p-2">Route</th>
                     <th className="p-2">Status</th>
-                    <th className="p-2">ms</th>
+                    <th className="p-2">Lang</th>
                     <th className="p-2">Pass</th>
                   </tr>
                 </thead>
                 <tbody>
                   {report.results.map((r) => (
-                    <tr key={r.scenario_id} className="border-t border-neutral-100 dark:border-neutral-800">
-                      <td className="p-2 font-mono text-xs">{r.scenario_id}</td>
+                    <tr
+                      key={r.scenario_id}
+                      className="border-t border-neutral-100 align-top dark:border-neutral-800"
+                    >
+                      <td className="p-2 font-mono text-xs">
+                        {r.scenario_id}
+                        {!r.passed && (
+                          <div className="mt-1 font-sans text-[11px] text-red-600 dark:text-red-400">
+                            {r.error
+                              ? `crashed: ${r.error}`
+                              : Object.entries(r.metrics ?? {})
+                                  .filter(([, ok]) => !ok)
+                                  .map(([k]) => k)
+                                  .join(", ")}
+                            {r.failed_turns?.length > 0 && ` (turns ${r.failed_turns.join(", ")})`}
+                          </div>
+                        )}
+                        {r.reply && (
+                          <div
+                            className="mt-1 max-w-md truncate font-sans text-[11px] text-neutral-500"
+                            title={r.reply}
+                          >
+                            {r.reply}
+                          </div>
+                        )}
+                      </td>
                       <td className="p-2">{r.category}</td>
                       <td className="p-2">{r.route ?? "—"}</td>
                       <td className="p-2">{r.status ?? "—"}</td>
-                      <td className="p-2">{r.latency_ms}</td>
+                      <td className="p-2">{r.language}</td>
                       <td className="p-2">{r.passed ? "✅" : "❌"}</td>
                     </tr>
                   ))}

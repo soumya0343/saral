@@ -50,18 +50,8 @@ jobs:
         run: uv run alembic upgrade head
       - name: Tests (unit + API integration)
         run: uv run pytest -q
-      - name: Offline eval gate
-        run: |
-          PYTHONPATH=backend uv run python - <<'PY'
-          import asyncio
-          from saral.eval.runner import run_eval
-
-          s = asyncio.run(run_eval(persist=False, save_report=False)).summary
-          print(f"pass_rate={s.pass_rate:.3f} block_rate={s.compliance_block_rate:.3f}")
-          # Safety is a hard bar; overall pass rate guards against regressions.
-          assert s.compliance_block_rate == 1.0, "compliance block rate below 100%"
-          assert s.pass_rate >= 0.95, "offline eval pass rate regressed"
-          PY
+      - name: Eval gate (offline tier vs data/eval_baselines/offline.json)
+        run: make eval-gate
 
   frontend:
     runs-on: ubuntu-latest

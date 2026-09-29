@@ -168,16 +168,32 @@ Interactive docs at `localhost:8000/docs`.
 
 ## Evaluation
 
+Two tiers run the same ~150 scenarios in [`data/scenarios/`](data/scenarios/): single-turn,
+**multi-turn conversations** (OTP, confirm/cancel, clarifications, topic switches, follow-ups),
+and an **injection set** of attacks plus benign look-alikes.
+
 ```bash
-make eval               # run labeled scenario suite (LLM judge)
+make eval            # offline: stub LLM + hashing embedder — deterministic, free, used by CI
+make eval-gate       # offline + fail if any metric drops below data/eval_baselines/offline.json
+make eval-baseline   # after a genuine improvement: write the new baseline (commit it)
+make eval-live       # live: the real free models in .env, judged by a pinned LLM judge
+make eval-live ARGS="--limit 20"   # a sample; ARGS="--resume" continues after a quota stop
+make eval-labels     # add the latest live replies to data/eval_labels/ for human labelling
 ```
 
-Scenarios live in [`data/scenarios/`](data/scenarios/); reports land in
-`data/eval_reports/` and render in the frontend at `/eval`. The report includes
-per-language judge **Cohen's κ** vs human labels — a language whose κ is undefined
-(too few / unanimous labels) or below `JUDGE_KAPPA_FLOOR` is listed as
-**untrusted** (its resolution metric needs human review). Eval pins `EMBEDDER=hashing`
-for deterministic, reproducible scores.
+Metrics look at the **reply**, not just the plumbing: reply in the customer's language/script,
+required facts present + expected source cited, faithfulness (no number/id the sources don't
+contain; the live judge also checks claims), explanation cites the customer's own documents,
+multi-turn success, attack block rate **and** false-block rate on benign look-alikes, plus
+pass rate per language. The tier is derived from the config actually in effect, so a stub run
+can never be reported as a live one.
+
+The offline judge is a rubric built from the expectations, so its "agreement with humans" is
+circular and not reported. Judge trust comes only from the live tier: humans label the exact
+live replies (`make eval-labels`), and Cohen's κ per language is computed from those; a
+language with κ undefined or below `JUDGE_KAPPA_FLOOR` is listed as **not validated**. The live
+judge is pinned to one model of a different family than the synthesis model and never falls
+back — a judge that swaps models mid-suite would make scores incomparable.
 
 ## Maintenance jobs
 

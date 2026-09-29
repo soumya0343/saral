@@ -105,11 +105,15 @@ class OpenAICompatProvider:
                 data = resp.json()
             except httpx.HTTPStatusError as e:
                 status = e.response.status_code
+                # Groq/OpenAI reject malformed JSON-mode output with a 400; that is the MODEL's
+                # output failing, which a retry can fix — unlike a bad key or retired model.
+                bad_output = status == 400 and "json_validate_failed" in e.response.text
                 last_err = LLMError(
-                    f"{self.name} request failed: HTTP {status}",
+                    f"{self.name} request failed: HTTP {status}"
+                    + (" (model produced invalid JSON)" if bad_output else ""),
                     # 429 (rate limit) and 5xx (overload) can recover; other 4xx (bad key,
                     # retired model, bad request) will fail the same way again.
-                    retryable=status == 429 or status >= 500,
+                    retryable=status == 429 or status >= 500 or bad_output,
                     retry_after=_retry_after(e.response),
                     prefer_failover=True,
                 )

@@ -1,0 +1,19 @@
+{
+  "tier": "offline",
+  "n": 154,
+  "metrics": {
+    "pass_rate": 0.6364,
+    "routing_accuracy": 0.9853,
+    "tool_sequence_correctness": 1.0,
+    "compliance_block_rate": 0.8936,
+    "groundedness": 1.0,
+    "explanation_groundedness": 1.0,
+    "language_match": 0.7208,
+    "answer_correctness": 0.3077,
+    "faithfulness": 1.0,
+    "multi_turn_success": 0.96,
+    "resolution_accuracy": 0.8961,
+    "cross_lingual_consistency": 1.0,
+    "false_block_rate": 0.5
+  }
+}
