@@ -98,43 +98,32 @@ async function api(path: string, init: RequestInit = {}): Promise<Response> {
   return r;
 }
 
-// SSE over fetch (EventSource can't send an Authorization header). Calls onOpen once the
-// stream is established; onEvent returns true to stop reading.
-async function streamEvents(
-  path: string,
-  onOpen: () => void,
-  onEvent: (e: TraceEvent) => boolean,
-): Promise<void> {
-  let opened = false;
-  try {
-    const r = await api(path, { headers: { Accept: "text/event-stream" } });
-    opened = true;
-    onOpen();
-    if (!r.ok || !r.body) return;
-    const reader = r.body.getReader();
-    const decoder = new TextDecoder();
-    let buf = "";
-    for (;;) {
-      const { value, done } = await reader.read();
-      if (done) return;
-      buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
-      let cut: number;
-      while ((cut = buf.indexOf("\n\n")) >= 0) {
-        const block = buf.slice(0, cut);
-        buf = buf.slice(cut + 2);
-        const data = block
-          .split("\n")
-          .filter((l) => l.startsWith("data:"))
-          .map((l) => l.slice(5).replace(/^ /, ""))
-          .join("\n");
-        if (data && onEvent(JSON.parse(data))) {
-          await reader.cancel();
-          return;
-        }
+// SSE over fetch (EventSource can't send an Authorization header). onEvent returns true to
+// stop reading.
+async function streamEvents(path: string, onEvent: (e: TraceEvent) => boolean): Promise<void> {
+  const r = await api(path, { headers: { Accept: "text/event-stream" } });
+  if (!r.ok || !r.body) return;
+  const reader = r.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) return;
+    buf += decoder.decode(value, { stream: true }).replace(/\r\n/g, "\n");
+    let cut: number;
+    while ((cut = buf.indexOf("\n\n")) >= 0) {
+      const block = buf.slice(0, cut);
+      buf = buf.slice(cut + 2);
+      const data = block
+        .split("\n")
+        .filter((l) => l.startsWith("data:"))
+        .map((l) => l.slice(5).replace(/^ /, ""))
+        .join("\n");
+      if (data && onEvent(JSON.parse(data))) {
+        await reader.cancel();
+        return;
       }
     }
-  } finally {
-    if (!opened) onOpen();
   }
 }
 
@@ -638,15 +627,25 @@ export default function App() {
     setInput("");
     try {
       const cid = await ensureConversation();
-      let markOpen: () => void = () => {};
-      const opened = new Promise<void>((resolve) => {
-        markOpen = resolve;
-        setTimeout(resolve, 1000);
+      // Post first, then subscribe to THIS run: the server replays the run's trace from its
+      // first event, so nothing is lost however fast the worker is (no open/timeout race).
+      const endpoint = resuming ? "reply" : "messages"; // resume a suspended run via /reply
+      const posted = await api(`/conversations/${cid}/${endpoint}`, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ content: text }),
       });
-      const done = streamEvents(`/conversations/${cid}/stream`, markOpen, (e) => {
+      if (posted.status === 401) return signOut();
+      if (!posted.ok) throw new Error(`send failed (${posted.status})`);
+      const { run_id } = await posted.json();
+      const done = streamEvents(`/conversations/${cid}/stream?run_id=${run_id}`, (e) => {
         if (e.type === "otp") {
           setOtp(String(e.data.code ?? ""));
           return false; // OTP is delivered via the popup, not added to the chat trace/text
+        }
+        if (e.type === "warning") {
+          console.warn("saral:", e.data); // e.g. persist_failed — state may not be saved
+          return false;
         }
         setTurns((t) => {
           const copy = [...t];
@@ -669,15 +668,6 @@ export default function App() {
         });
         return e.type === "run_finished";
       });
-      await opened;
-      // Resume a suspended run via /reply; otherwise start a new run via /messages.
-      const endpoint = resuming ? "reply" : "messages";
-      const posted = await api(`/conversations/${cid}/${endpoint}`, {
-        method: "POST",
-        headers: { "content-type": "application/json" },
-        body: JSON.stringify({ content: text }),
-      });
-      if (posted.status === 401) return signOut();
       await done;
       refreshConvos();
     } finally {

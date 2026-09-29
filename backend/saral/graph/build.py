@@ -15,6 +15,7 @@ execute, and no write fires without a fresh token re-validation in the same tran
 
 from __future__ import annotations
 
+import asyncio
 import re
 from functools import lru_cache
 
@@ -33,6 +34,7 @@ from saral.compliance.gate import ComplianceGate
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.graph.state import RunState
+from saral.llm import usage as llm_usage
 from saral.logging import get_logger
 from saral.schemas import (
     EscalationRecord,
@@ -168,6 +170,11 @@ _STEPUP_FAILED = {
     Language.HI: "मैं वन-टाइम कोड सत्यापित नहीं कर सका, इसलिए इसे एक मानव एजेंट को भेज दिया है जो आगे संपर्क करेगा।",  # noqa: E501
     Language.HINGLISH: "Main one-time code verify nahi kar paaya, isliye maine ise human agent ko escalate kar diya hai jo follow up karega.",  # noqa: E501
 }
+_OTP_RETRY = {
+    Language.EN: "That code didn't match. Please try again — {n} attempt(s) left.",
+    Language.HI: "यह कोड मेल नहीं खाया। कृपया फिर से कोशिश करें — {n} प्रयास बाकी हैं।",
+    Language.HINGLISH: "Yeh code match nahi hua. Kripya dobara try karein — {n} attempt baaki hain.",  # noqa: E501
+}
 _STEPUP_PROMPT = {
     Language.EN: "To {action}, I need to verify it's you. I've sent a one-time code.",
     Language.HI: "{action} के लिए, मुझे सत्यापित करना होगा कि यह आप ही हैं। मैंने एक वन-टाइम कोड भेजा है।",  # noqa: E501
@@ -275,7 +282,11 @@ async def triage_node(state: RunState) -> dict:
 
 
 async def compliance_node(state: RunState) -> dict:
-    decisions = _gate.evaluate(state.raw_message, state.intents, state.user_id, state.entities)
+    # The gate reads the (sync) core-system store for ownership: keep it off the event loop so
+    # concurrent runs in the worker don't stall on each other's DB round-trips.
+    decisions = await asyncio.to_thread(
+        _gate.evaluate, state.raw_message, state.intents, state.user_id, state.entities
+    )
     return {"compliance_decisions": decisions, "step_count": 1}
 
 
@@ -298,6 +309,33 @@ def _suspend(status: str, message: str, **extra) -> dict:
     }
     up.update(extra)
     return up
+
+
+def _has_reads(state: RunState) -> bool:
+    """Intents that can be answered right now without step-up (info / read actions)."""
+    return any(
+        i.type == IntentType.INFORMATION
+        or (i.type == IntentType.ACTION and i.action and not requires_step_up(i.action))
+        for i in state.intents
+    )
+
+
+def _is_fresh_turn(state: RunState) -> bool:
+    return (
+        state.pending_write is None
+        and state.resume_reply is None
+        and state.challenge_response is None
+    )
+
+
+def _gate_write(state: RunState, status: str, message: str, **extra) -> dict:
+    """Suspend for a write — but on a fresh mixed turn ("claim status + update my number"),
+    answer the reads first: route normally and let synthesis append this prompt and suspend."""
+    if _is_fresh_turn(state) and _has_reads(state):
+        up = {"suspend_prompt": message, "status": status, "step_count": 1}
+        up.update(extra)
+        return up
+    return _suspend(status, message, **extra)
 
 
 async def identity_node(state: RunState) -> dict:
@@ -386,13 +424,26 @@ async def identity_node(state: RunState) -> dict:
                     "step_count": 1,
                 }
             table = _clarify_table(state.raw_message, field, detailed=attempts >= 1)
-            return _suspend("awaiting_input", _t(table, lang))
+            return {
+                **_gate_write(state, "awaiting_input", _t(table, lang)),
+                "allowed_domains": up["allowed_domains"],
+            }
 
     decision = identity_gate(state.auth_level, state.intents)
 
     # Step-up owed: auth_level below step_up for a write.
     if decision.owed:
-        # A challenge was answered but auth_level is still below step_up → verification failed.
+        # A challenge was answered but auth_level is still below step_up → wrong code. Re-prompt
+        # on the same challenge while tries remain; escalate once it is burned.
+        if state.challenge_response and state.otp_attempts_left > 0 and state.challenge_id:
+            return _suspend(
+                "awaiting_input",
+                _t(_OTP_RETRY, lang).format(n=state.otp_attempts_left),
+                pending_write=pending,
+                intent_nonce=nonce,
+                step_up_owed=True,
+                challenge_id=state.challenge_id,
+            )
         if state.challenge_response:
             esc = EscalationRecord(
                 conversation_id=state.conversation_id,
@@ -416,13 +467,15 @@ async def identity_node(state: RunState) -> dict:
                 ),
                 "step_count": 1,
             }
-        chal = request_step_up(state.user_id)
+        chal = await asyncio.to_thread(request_step_up, state.user_id)
         action_name = _t(_ACTION_NAME.get(pending.tool, {}), lang) or pending.tool.replace("_", " ")
         # The OTP is delivered out-of-band (simulated SMS popup), not written into the message.
         prompt = _t(_STEPUP_PROMPT, lang).format(action=action_name) + _t(_OTP_SUFFIX, lang)
-        return _suspend(
+        return _gate_write(
+            state,
             "awaiting_input",
             prompt,
+            allowed_domains=up["allowed_domains"],
             pending_write=pending,
             intent_nonce=nonce,
             step_up_owed=True,
@@ -464,22 +517,32 @@ async def identity_node(state: RunState) -> dict:
             "pending_write": pending,
             "intent_nonce": nonce,
             "step_up_owed": False,
+            "write_confirmed": True,  # the ONLY path that lets the action node execute it
+            "allowed_domains": up["allowed_domains"],
             "step_count": 1,
         }  # route stays None → supervisor routes to action/mixed → write executes
-    return _suspend(
+    return _gate_write(
+        state,
         "awaiting_confirmation",
         pending.read_back,
         pending_write=pending,
         intent_nonce=nonce,
         step_up_owed=False,
-)
+        allowed_domains=up["allowed_domains"],
+    )
 
 
 def _route(state: RunState) -> str:
     if state.step_count > get_settings().max_step_count:
         return "respond"
     kinds = {i.type for i in state.intents}
-    has_action = IntentType.ACTION in kinds
+    # A write only routes to the action node once confirmed; unconfirmed it is suspended.
+    has_action = any(
+        i.type == IntentType.ACTION
+        and i.action
+        and (not requires_step_up(i.action) or state.write_confirmed)
+        for i in state.intents
+    )
     has_info = IntentType.INFORMATION in kinds
     if has_action and has_info:
         return "mixed"
@@ -559,7 +622,8 @@ async def action_node(state: RunState) -> dict:
             state.user_id,
             state.run_id,
             state.raw_message,
-            pending_write=state.pending_write,
+            # Defence in depth: the write executes only after an explicit "yes".
+            pending_write=state.pending_write if state.write_confirmed else None,
 )
         return {"actions": records, "step_count": 1}
     except Exception as e:  # noqa: BLE001
@@ -570,6 +634,12 @@ async def action_node(state: RunState) -> dict:
 async def synthesis_node(state: RunState) -> dict:
     # Ungrounded info answer (retrieval below floor): escalate instead of generating from
     # weak/empty passages. Deterministic wording, no LLM.
+    # A read in a mixed turn escalated: don't also hold a write (or its OTP) open.
+    drop_write = (
+        {"pending_write": None, "challenge_id": None, "challenge_otp": None, "suspend_prompt": None}
+        if state.suspend_prompt
+        else {}
+    )
     if state.ungrounded:
         lang = state.language or Language.EN
         response = ResponsePayload(
@@ -591,6 +661,7 @@ async def synthesis_node(state: RunState) -> dict:
                 transcript_ref=state.conversation_id,
                 sla_target="4h",
 ),
+            **drop_write,
         }
 
     ctx = SynthesisContext(
@@ -601,8 +672,11 @@ async def synthesis_node(state: RunState) -> dict:
         decisions=state.compliance_decisions,
         degraded=state.degraded_agents,
         history=state.history,
+        write_pending=bool(state.suspend_prompt),
     )
+    tokens_before = llm_usage.current()
     response = await _synth.run(ctx)
+    tokens = llm_usage.current() - tokens_before
     # NOTE: the live reply to the authenticated owner shows their OWN data (e.g. the email they
     # just set) — masking it reads as a bug. PII redaction is applied at STORAGE time
     # (db.repository.persist_run) so the transcript/audit stay PII-free and erasure-compatible.
@@ -615,8 +689,20 @@ async def synthesis_node(state: RunState) -> dict:
         "final_response": response,
         "status": status,
         "step_count": 1,
-        "tokens_used": _synth.last_tokens,
+        "tokens_used": tokens,
     }
+    # Mixed read + write (fresh turn): reads answered above; now ask for the OTP / confirmation
+    # and suspend with the status identity chose.
+    if state.suspend_prompt:
+        if status == "escalated":
+            update.update(drop_write)
+        else:
+            response.message = f"{response.message}\n\n{state.suspend_prompt}".strip()
+            response.resolution_status = "awaiting"
+            response.escalated = False
+            update["status"] = state.status
+            update["route"] = "suspend"
+            return update
     # Escalation as a real artifact: emit a record on any escalated outcome.
     if status == "escalated" and state.escalation is None:
         primary = next((i.action or str(i.type) for i in state.intents), "unknown")

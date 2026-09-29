@@ -5,6 +5,7 @@ Kept separate from the consume loop so it can be unit-tested without Redis Strea
 
 from __future__ import annotations
 
+import asyncio
 import time
 
 from saral.compliance.pii import redact_pii
@@ -33,6 +34,8 @@ async def execute_run(req: RunRequest) -> RunState:
         intent_nonce=req.intent_nonce,
         resume_reply=req.resume_reply,
         challenge_response=req.challenge_response,
+        challenge_id=req.challenge_id,
+        otp_attempts_left=req.otp_attempts_left,
         reply_text=req.reply_text,
         language_hint=Language(req.prev_language) if req.prev_language else None,
     )
@@ -54,7 +57,6 @@ async def execute_run(req: RunRequest) -> RunState:
     await publish_trace(ev("run_started", data={"message": redact_pii(req.message)}))
 
     final_state = init
-    pending_otp: str | None = None
     t_start = time.monotonic()
     prev_ts = t_start
     try:
@@ -67,9 +69,6 @@ async def execute_run(req: RunRequest) -> RunState:
                 prev_ts = now
                 await publish_trace(ev("agent_started", agent=node_name))
                 final_state = final_state.model_copy(update=update)
-                # Capture a simulated OTP; emitted AFTER the reply so the message shows first.
-                if update.get("challenge_otp"):
-                    pending_otp = update["challenge_otp"]
 
                 if "intents" in update:
                     await publish_trace(
@@ -157,26 +156,41 @@ async def execute_run(req: RunRequest) -> RunState:
                 },
             )
         )
-        # Simulated OTP "SMS" arrives AFTER the assistant's "I've sent a code" reply.
+        # Simulated OTP "SMS" arrives AFTER the assistant's "I've sent a code" reply — taken from
+        # the FINAL state, so a code dropped later in the run (e.g. escalation) is never shown.
+        pending_otp = final_state.challenge_otp
         if pending_otp:
             await publish_trace(
                 ev("otp", agent="identity", data={"code": pending_otp, "channel": "sms"})
             )
-        await _persist(final_state)
+        await _persist_or_warn(final_state)
+        await _drop_checkpoint(graph, req.run_id)
     except TimeoutError as e:
         log.error("run.timeout", run_id=req.run_id, error=str(e))
         await publish_trace(ev("error", data={"error": str(e)}))
-        final_state.status = "timed_out" # terminal close, recorded with closed_at
-        await _persist(final_state)
+        final_state.status = "timed_out"  # terminal close, recorded with closed_at
+        await _persist_or_warn(final_state)
+        await _drop_checkpoint(graph, req.run_id)
     except Exception as e:  # noqa: BLE001 — never hard-crash a run
         log.error("run.error", run_id=req.run_id, error=str(e))
         await publish_trace(ev("error", data={"error": str(e)}))
-        final_state.status = "crashed"  # terminal close; crash resume re-runs from checkpoint
-        await _persist(final_state)
+        final_state.status = "crashed"  # terminal close: the entry is acked, never resumed
+        await _persist_or_warn(final_state)
+        await _drop_checkpoint(graph, req.run_id)
     finally:
         await publish_trace(ev("run_finished", data={"status": final_state.status}))
 
     return final_state
+
+
+async def _drop_checkpoint(graph, run_id: str) -> None:
+    """A run that reached an outcome is acked and never resumed, so its checkpoint (the full
+    run state, raw message included) is deleted. Only a worker that DIES mid-run leaves one
+    behind — exactly the case crash-resume needs."""
+    try:
+        await graph.checkpointer.adelete_thread(run_id)
+    except Exception as e:  # noqa: BLE001
+        log.warning("run.checkpoint_drop_failed", run_id=run_id, error=str(e))
 
 
 def _redacted(entities: dict) -> dict:
@@ -184,15 +198,50 @@ def _redacted(entities: dict) -> dict:
     return {k: redact_pii(v) if isinstance(v, str) else v for k, v in entities.items()}
 
 
-async def _persist(state: RunState) -> None:
-    """Best-effort persistence of the run + audit chain. Never crashes a run."""
+_PERSIST_ATTEMPTS = 3
+_PERSIST_BACKOFF_S = (0.2, 0.5, 1.0)
+
+
+async def _persist_or_warn(state: RunState) -> None:
+    if not await _persist(state):
+        # The reply was shown, but the conversation state (e.g. a pending confirmation) was not
+        # saved: tell the client instead of failing silently on its next reply.
+        await publish_trace(
+            TraceEvent(
+                type="warning",
+                run_id=state.run_id,
+                conversation_id=state.conversation_id,
+                data={"warning": "persist_failed"},
+            )
+        )
+
+
+async def _persist(state: RunState) -> bool:
+    """Persist the run + audit chain + suspend custody, retrying transient failures.
+
+    persist_run commits once at the end, so a failed attempt rolls back entirely and a retry is
+    safe; if a commit landed but its ack was lost, the run row exists and we stop. Never crashes
+    a run, but a final failure is an ERROR and is reported to the client (returns False).
+    """
     from saral.config import get_settings
 
     if get_settings().app_env == "test":
-        return
-    try:
-        from saral.db.repository import persist_run
+        return True
+    from saral.db.repository import persist_run, run_persisted
 
-        await persist_run(state)
-    except Exception as e:  # noqa: BLE001
-        log.warning("run.persist_failed", run_id=state.run_id, error=str(e))
+    last: Exception | None = None
+    for attempt in range(_PERSIST_ATTEMPTS):
+        try:
+            await persist_run(state)
+            return True
+        except Exception as e:  # noqa: BLE001
+            last = e
+            log.warning("run.persist_retry", run_id=state.run_id, attempt=attempt, error=str(e))
+            try:
+                if await run_persisted(state.run_id):
+                    return True
+            except Exception:  # noqa: BLE001, S110 — DB still down; keep retrying
+                pass
+            await asyncio.sleep(_PERSIST_BACKOFF_S[attempt])
+    log.error("run.persist_failed", run_id=state.run_id, error=str(last))
+    return False

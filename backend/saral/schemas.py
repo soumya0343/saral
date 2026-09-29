@@ -233,6 +233,7 @@ TraceEventType = Literal[
     "otp",  # simulated OTP delivery (no SMS channel) — surfaced as a popup, not chat text
     "final",
     "error",
+    "warning",  # non-terminal problem the client should know about (e.g. persist failed)
     "run_finished",
 ]
 
@@ -274,3 +275,4 @@ class RunRequest(BaseModel):
     # Step-up challenge echoed back by the customer (the OTP), validated on resume.
     challenge_id: str | None = None
     challenge_response: str | None = None
+    otp_attempts_left: int = 0  # tries left on challenge_id after a wrong code (0 = burned)

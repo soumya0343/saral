@@ -35,6 +35,8 @@ class Conversation(Base, TimestampMixin):
     # `step_up_until`; cleared when the run ends terminally ("authority is mortal").
     step_up_for: Mapped[str | None] = mapped_column(String(64), nullable=True)
     step_up_until: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    # Last allocated message sequence number (see repository.allocate_seq).
+    next_seq: Mapped[int] = mapped_column(Integer, default=0, server_default="0", nullable=False)
     suspend_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     pending_write: Mapped[dict | None] = mapped_column(JSONB, nullable=True)
     challenge_id: Mapped[str | None] = mapped_column(String(64), nullable=True)

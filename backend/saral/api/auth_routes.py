@@ -13,6 +13,8 @@ downstream comes ONLY from the access token.
 
 from __future__ import annotations
 
+import asyncio
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
@@ -49,24 +51,24 @@ class LoginVerify(BaseModel):
 async def login_verify(body: LoginVerify) -> CustomerSession:
     """Existing customer: exchange the login OTP for a session. The challenge alone decides
     whose account this is — the request can't name a user."""
-    user_id = get_store().challenge_owner(body.challenge_id, purpose="login")
-    if user_id is None or not verify_step_up(
-        body.challenge_id, body.code, user_id, purpose="login"
+    user_id = await asyncio.to_thread(get_store().challenge_owner, body.challenge_id, "login")
+    if user_id is None or not await asyncio.to_thread(
+        verify_step_up, body.challenge_id, body.code, user_id, "login"
     ):
-        left = attempts_left(body.challenge_id) if user_id else 0
+        left = await asyncio.to_thread(attempts_left, body.challenge_id) if user_id else 0
         raise HTTPException(
             status_code=401,
             detail={"error": "invalid or expired code", "attempts_left": left},
         )
-    profile = mb.get_customer(user_id) or {"name": user_id}
-    ctx = mb.get_customer_context(user_id)
+    profile = await asyncio.to_thread(mb.get_customer, user_id) or {"name": user_id}
+    ctx = await asyncio.to_thread(mb.get_customer_context, user_id)
     return CustomerSession(
         user_id=user_id,
         name=profile["name"],
         returning=True,
         policy_id=ctx.get("policy_id"),
         claim_id=ctx.get("claim_id"),
-        tokens=issue_tokens(user_id),
+        tokens=await asyncio.to_thread(issue_tokens, user_id),
     )
 
 
@@ -74,19 +76,17 @@ class RefreshRequest(BaseModel):
     refresh_token: str
 
 
-@router.post(
-    "/refresh", response_model=TokenPair, dependencies=[per_ip("refresh", limit=30)]
-)
+@router.post("/refresh", response_model=TokenPair, dependencies=[per_ip("refresh", limit=30)])
 async def refresh(body: RefreshRequest) -> TokenPair:
     try:
-        return refresh_tokens(body.refresh_token)
+        return await asyncio.to_thread(refresh_tokens, body.refresh_token)
     except mb.ToolError as e:
         raise HTTPException(status_code=401, detail=str(e)) from e
 
 
 @router.post("/logout", status_code=204)
 async def logout(body: RefreshRequest) -> None:
-    get_store().revoke_refresh(body.refresh_token)
+    await asyncio.to_thread(get_store().revoke_refresh, body.refresh_token)
 
 
 class SessionRequest(BaseModel):
@@ -106,7 +106,7 @@ async def mint_session(body: SessionRequest) -> SessionToken:
     Disabled when APP_ENV=prod — there, sessions come only from sign-up or the login OTP."""
     if get_settings().app_env == "prod":
         raise HTTPException(status_code=404, detail="not found")
-    if not mb.user_exists(body.user_id):
+    if not await asyncio.to_thread(mb.user_exists, body.user_id):
         raise HTTPException(status_code=404, detail=f"customer {body.user_id} not found")
     token = mint_session_token(body.user_id)
     claims = decode_token(token)
@@ -144,7 +144,9 @@ async def step_up(
     """Standalone step-up harness. The chat flow does NOT honour client step-up tokens — it
     grants step-up server-side, bound to one pending write (see /conversations/{id}/reply)."""
     if body.challenge_id and body.response is not None:
-        if verify_step_up(body.challenge_id, body.response, claims.user_id):
+        if await asyncio.to_thread(
+            verify_step_up, body.challenge_id, body.response, claims.user_id
+        ):
             ttl_min = max(get_settings().step_up_grant_ttl_s // 60, 1)
             token = mint_session_token(
                 claims.user_id,
@@ -156,10 +158,10 @@ async def step_up(
         return StepUpResult(
             mode="failed",
             auth_level=str(claims.auth_level),
-            attempts_left=attempts_left(body.challenge_id),
+            attempts_left=await asyncio.to_thread(attempts_left, body.challenge_id),
         )
 
-    chal = request_step_up(claims.user_id)
+    chal = await asyncio.to_thread(request_step_up, claims.user_id)
     return StepUpResult(
         mode="requested", challenge_id=chal["challenge_id"], test_otp=chal.get("test_otp")
     )

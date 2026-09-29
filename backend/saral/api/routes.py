@@ -9,13 +9,14 @@ so a verified OTP authorizes that one write only, and only briefly.
 
 from __future__ import annotations
 
+import asyncio
 import uuid
 from datetime import UTC, datetime, timedelta
 from typing import Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, Header, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import func, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sse_starlette.sse import EventSourceResponse
 
@@ -24,9 +25,11 @@ from saral.api.deps import current_customer, owned_conversation, require_service
 from saral.api.ratelimit import per_customer, per_ip
 from saral.auth import SessionClaims, request_step_up, verify_step_up
 from saral.auth.sessions import TokenPair, issue_tokens
+from saral.auth.stepup import attempts_left
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.db.models import Conversation, Message
+from saral.db.repository import allocate_seq
 from saral.db.session import get_session
 from saral.runbus import enqueue_run, subscribe_trace
 from saral.schemas import AuthLevel, HistoryTurn, PendingWrite, RunRequest
@@ -86,9 +89,9 @@ async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
         raise HTTPException(
             status_code=400, detail="name and a mobile number or email are required"
         )
-    existing = mb.find_customer(body.mobile, body.email)
+    existing = await asyncio.to_thread(mb.find_customer, body.mobile, body.email)
     if existing is not None:
-        chal = request_step_up(existing["user_id"], purpose="login")
+        chal = await asyncio.to_thread(request_step_up, existing["user_id"], "login")
         return IdentifyOut(
             status="otp_required",
             challenge_id=chal["challenge_id"],
@@ -96,7 +99,7 @@ async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
             test_otp=chal.get("test_otp"),
         )
     try:
-        created = mb.identify_customer(body.name, body.mobile, body.email)
+        created = await asyncio.to_thread(mb.identify_customer, body.name, body.mobile, body.email)
     except mb.ToolError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
     return IdentifyOut(
@@ -107,7 +110,7 @@ async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
             returning=False,
             policy_id=created.get("policy_id"),
             claim_id=created.get("claim_id"),
-            tokens=issue_tokens(created["user_id"]),
+            tokens=await asyncio.to_thread(issue_tokens, created["user_id"]),
         ),
     )
 
@@ -121,10 +124,10 @@ class CustomerProfile(BaseModel):
 
 @router.get("/me", response_model=CustomerProfile, tags=["customers"])
 async def me(claims: SessionClaims = Depends(current_customer)) -> CustomerProfile:
-    profile = mb.get_customer(claims.user_id)
+    profile = await asyncio.to_thread(mb.get_customer, claims.user_id)
     if profile is None:
         raise HTTPException(status_code=404, detail="customer not found")
-    ctx = mb.get_customer_context(claims.user_id)
+    ctx = await asyncio.to_thread(mb.get_customer_context, claims.user_id)
     return CustomerProfile(
         user_id=claims.user_id,
         name=profile["name"],
@@ -224,13 +227,7 @@ async def start_conversation(
 async def _append_message(
     db: AsyncSession, convo: Conversation, role: str, content: str
 ) -> Message:
-    next_seq = (
-        await db.scalar(
-            select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
-                Message.conversation_id == convo.id
-            )
-        )
-    ) or 1
+    next_seq = await allocate_seq(db, convo.id)
     msg = Message(
         tenant_id=convo.tenant_id,
         conversation_id=convo.id,
@@ -291,7 +288,7 @@ async def send_message(
         auth_level=AuthLevel.SESSION,  # a fresh message never carries step-up forward
         message=body.content,
         history=history,
-        known_entities=mb.get_customer_context(convo.user_id),
+        known_entities=await asyncio.to_thread(mb.get_customer_context, convo.user_id),
         prev_language=convo.language,
     )
     # Commit BEFORE enqueueing so the worker never races ahead of this turn's rows.
@@ -333,7 +330,7 @@ async def reply(
         auth_level=AuthLevel.STEP_UP if _step_up_granted(convo, pending) else AuthLevel.SESSION,
         message=original,  # re-send the original so the write re-evaluates (not the reply)
         history=history,
-        known_entities=mb.get_customer_context(convo.user_id),
+        known_entities=await asyncio.to_thread(mb.get_customer_context, convo.user_id),
         pending_write=pending,
         intent_nonce=pending.intent_nonce if pending else 0,
         prev_language=convo.language,
@@ -343,14 +340,17 @@ async def reply(
     if convo.suspend_status == "awaiting_input" and convo.challenge_id:
         # Step-up OTP reply. A one-time code is a security credential — verified deterministically,
         # never interpreted by an LLM. Success grants step-up for this pending write, briefly.
-        if verify_step_up(convo.challenge_id, body.content, convo.user_id):
+        if await asyncio.to_thread(verify_step_up, convo.challenge_id, body.content, convo.user_id):
             convo.step_up_for = pending.idempotency_key if pending else None
             convo.step_up_until = datetime.now(UTC) + timedelta(
                 seconds=get_settings().step_up_grant_ttl_s
             )
             req.auth_level = AuthLevel.STEP_UP
         else:
-            req.challenge_response = body.content  # wrong OTP -> graph escalates
+            # Wrong code: the graph re-prompts while tries remain, escalates once burned.
+            req.challenge_response = body.content
+            req.challenge_id = convo.challenge_id
+            req.otp_attempts_left = await asyncio.to_thread(attempts_left, convo.challenge_id)
     else:
         # An LLM interprets the reply (confirm / reject / unclear / value / correction / other)
         # from the suspend context + history, under a deterministic AND-guard. The write trigger
@@ -390,13 +390,21 @@ async def reply(
 
 
 @router.get("/conversations/{conversation_id}/stream", tags=["conversations"])
-async def stream(convo: Conversation = Depends(owned_conversation)):
-    """SSE stream of agent trace + final response for the latest run (owner only)."""
+async def stream(
+    run_id: str | None = None,
+    last_event_id: str | None = Header(default=None),
+    convo: Conversation = Depends(owned_conversation),
+):
+    """SSE stream of agent trace + final response (owner only).
+
+    Pass `run_id` (returned by /messages or /reply) to replay that run from its first event —
+    subscribing after posting loses nothing. `Last-Event-ID` resumes a dropped connection.
+    """
     conversation_id = convo.id
 
     async def event_gen():
-        async for raw in subscribe_trace(conversation_id):
-            yield {"data": raw}
+        async for event_id, raw in subscribe_trace(conversation_id, run_id, last_event_id):
+            yield {"id": event_id, "data": raw}
 
     return EventSourceResponse(event_gen())
 
@@ -434,7 +442,7 @@ async def erase_my_data(claims: SessionClaims = Depends(current_customer)) -> di
     from saral.compliance.erasure import erase_user_data
 
     counts = await erase_user_data(claims.user_id)
-    mb.revoke_user_sessions(claims.user_id)
+    await asyncio.to_thread(mb.revoke_user_sessions, claims.user_id)
     return {"erased": counts, "consent_status": "withdrawn"}
 
 

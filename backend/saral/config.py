@@ -140,8 +140,16 @@ class Settings(BaseSettings):
     conversation_memory_turns: int = 40  # full-chat context window (bounded for token safety)
 
     # --- Reliability (Phase 5) ---
-    llm_retry_cap: int = 2  # retries per provider on structured/parse error before fallback
+    llm_retry_cap: int = 2  # retries per provider on retryable errors before fallback
+    llm_backoff_base_s: float = 0.3  # jittered exponential backoff between same-provider retries
+    llm_breaker_threshold: int = 3  # consecutive failures that open a provider's breaker
+    llm_breaker_cooldown_s: float = 60.0
+    # Whole-call budgets per role (retries + fallbacks). Past it, only the instant stub runs.
+    llm_deadline_triage_s: float = 5.0
+    llm_deadline_synthesis_s: float = 10.0
+    llm_deadline_judge_s: float = 60.0
     checkpoint_backend: Literal["memory", "postgres"] = "memory"
+    worker_concurrency: int = 4  # runs executed at once per worker (same conversation: serial)
     claim_min_idle_ms: int = 30000  # XAUTOCLAIM: reclaim pending entries idle longer than this
     reclaim_batch: int = 10
     # Pending-write execution authority is mortal: past this TTL a suspended write
@@ -167,6 +175,13 @@ class Settings(BaseSettings):
     @property
     def provider_chain(self) -> list[str]:
         return [p.strip() for p in self.llm_provider_order.split(",") if p.strip()]
+
+    def role_deadline(self, role: str) -> float | None:
+        return {
+            "triage": self.llm_deadline_triage_s,
+            "synthesis": self.llm_deadline_synthesis_s,
+            "judge": self.llm_deadline_judge_s,
+        }.get(role)
 
     def role_chain(self, role: str) -> list[str]:
         """Provider chain for a role. Falls back to the default chain if unset."""

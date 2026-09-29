@@ -8,6 +8,20 @@ ones marked **(repro'd)** were confirmed by running the code during the audit.
 
 ---
 
+## Status (updated 2026-09-29)
+
+| Phase | State | Notes |
+|---|---|---|
+| 0 — Lock the edge | ✅ done | S1–S8 fixed (bearer auth + ownership, login OTP, hashed/attempt-limited OTP, refresh rotation, self-service erasure, service-key endpoints, CORS, rate limits, prod-secret guard), negation-safe confirmation, default-deny retrieval, CI, mypy clean. |
+| 6.1 — Free chain repair | ✅ done | R10: live-verified free models, per-role `provider:model`, reasoning params, startup probe, stub-fallback alert. |
+| 1 — Correctness & reliability | ✅ done | 1.1 atomic seq counter + commit-before-enqueue · 1.2 retried/loud persist · 1.3 async Postgres checkpointer (crash-resume proven across processes; finished checkpoints deleted) · 1.4 mixed read+write answers the read · 1.5 OTP retry budget · 1.6 worker concurrency + per-conversation ordering + heartbeat, LLM deadlines/failover/breaker, LID ‖ classify · 1.7 replayable trace stream (run_id + Last-Event-ID) · 1.8 per-run token usage · 1.9 store calls off the event loop. |
+| 2 → 7 | ⏳ next | Phase 2 (honest eval) is next. |
+
+Open items found while implementing: the capability guard still suppresses writes message-wide
+("How do I pay? Also update my email" → no write; 3.6), Gemini free Flash is often overloaded
+(503/slow — synthesis frequently served by Groq gpt-oss-120b; ~6–8 s), and hero U1003's data still
+frames her as the deceased claimant (D11).
+
 ## 0. TL;DR
 
 Saral has a strong design (identity gating, purpose-bound retrieval, suspend/resume,

@@ -10,6 +10,7 @@ API key and stays reproducible for eval.
 
 from __future__ import annotations
 
+import asyncio
 import re
 
 from saral.config import get_settings
@@ -369,14 +370,21 @@ class TriageAgent:
         # Security stays deterministic regardless: _normalize clamps to the allowed-action set,
         # the capability guard below blocks writes from "can I…?", and entities are re-validated
         # by regex — so what the LLM understood can never widen scope or fire an unsafe write.
-        if self._llm.has_real_provider:
-            result = await self._classify(message, history)
-            if _all_unknown(result.intents):
-                result = await self._classify(message, history, retry=True)
-            if _all_unknown(result.intents):
-                result = classify(message)  # deterministic last resort
-        else:
-            result = classify(message)  # no real provider: deterministic (offline/eval)
+        # Language detection (Sarvam) and intent classification (LLM) are independent calls:
+        # run them concurrently so triage latency is the slower of the two, not the sum.
+        lang_task = asyncio.create_task(self._detect_language(detect_from))
+        try:
+            if self._llm.has_real_provider:
+                result = await self._classify(message, history)
+                if _all_unknown(result.intents):
+                    result = await self._classify(message, history, retry=True)
+                if _all_unknown(result.intents):
+                    result = classify(message)  # deterministic last resort
+            else:
+                result = classify(message)  # no real provider: deterministic (offline/eval)
+        except BaseException:
+            lang_task.cancel()
+            raise
         # Deterministic safety guard: a capability/permission QUESTION must never become a write,
         # whatever the LLM said. Writes fire only on a direct request — keeps step-up honest.
         if _hits(message.lower(), {k.lower() for k in _CAPABILITY}):
@@ -384,7 +392,7 @@ class TriageAgent:
         # Entities come from precise regex (IDs/mobile/email), authoritative over any LLM guess.
         result.entities = {**result.entities, **extract_entities(message)}
 
-        language, degraded = await self._detect_language(detect_from)
+        language, degraded = await lang_task
         # Sticky language: a short / mostly-numeric reply ("3456", "ok", "yes") carries no
         # reliable signal — keep the conversation's established language. Devanagari always wins.
         if hint is not None and _is_weak_language_signal(detect_from):

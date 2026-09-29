@@ -8,6 +8,7 @@ from typing import TypeVar
 from pydantic import BaseModel
 
 from saral.config import get_settings
+from saral.llm import usage
 from saral.llm.base import LLMError, Message
 
 T = TypeVar("T", bound=BaseModel)
@@ -19,7 +20,6 @@ class AnthropicProvider:
     def __init__(self) -> None:
         self._settings = get_settings()
         self._client = None
-        self.last_total_tokens = 0
 
     @property
     def available(self) -> bool:
@@ -55,7 +55,7 @@ class AnthropicProvider:
             )
         except Exception as e:  # noqa: BLE001 — normalize to LLMError for fallback
             raise LLMError(f"anthropic complete failed: {e}") from e
-        self.last_total_tokens = resp.usage.input_tokens + resp.usage.output_tokens
+        usage.add(resp.usage.input_tokens + resp.usage.output_tokens)
         return "".join(b.text for b in resp.content if b.type == "text")
 
     async def structured(

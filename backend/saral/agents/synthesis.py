@@ -37,6 +37,9 @@ class SynthesisContext(BaseModel):
     decisions: list[ComplianceDecision] = Field(default_factory=list)
     degraded: list[str] = Field(default_factory=list)
     history: list[HistoryTurn] = Field(default_factory=list)  # recent turns for follow-up context
+    # Mixed turn: a change request in the same message is being handled separately (OTP /
+    # confirmation prompt appended after this reply) — the reply must not address it.
+    write_pending: bool = False
 
 
 # --- Language-specific templates (stub composer) ---
@@ -214,11 +217,11 @@ class SynthesisAgent:
     name = "synthesis"
 
     def __init__(self) -> None:
-        self._llm = get_llm("synthesis") # Hindi-strong Gemini Flash first
-        self.last_tokens = 0  # tokens used by the phrasing call (0 if deterministic)
+        self._llm = get_llm("synthesis")  # Hindi-strong Gemini Flash first
 
     async def run(self, ctx: SynthesisContext) -> ResponsePayload:
-        self.last_tokens = 0
+        """Compose the reply. Tokens spent are visible to the caller via `llm.usage` (a
+        per-task counter), never on this shared instance."""
         # Deterministic structure (status / citations / actions) — never delegated.
         payload = compose(ctx)
         # Real-LLM phrasing of the customer-facing message when a model is available, and
@@ -231,7 +234,6 @@ class SynthesisAgent:
             with contextlib.suppress(LLMError):
                 facts = self._facts(ctx, payload)
                 phrased = await self._phrase(ctx, facts)
-                self.last_tokens = self._llm.last_tokens
                 # Grounding gate: accept LLM phrasing only when it traces to the sources AND is
                 # not the stub echo (all real providers failed -> keep the deterministic draft).
                 if (
@@ -258,6 +260,12 @@ class SynthesisAgent:
             style=_LANG_STYLE.get(ctx.language, _LANG_STYLE[Language.EN]),
             facts="\n".join(facts),
         )
+        if ctx.write_pending:
+            prompt += (
+                "\n\nThe customer also asked to change their details; that is being handled "
+                "separately right after your reply. Answer ONLY the question above — do not "
+                "mention the change, how to make it, or any portal / customer-care steps."
+            )
         # Full conversation so the model has complete context (not just the last few turns).
         turns = [
             Message(role="assistant" if h.role == "assistant" else "user", content=h.content)

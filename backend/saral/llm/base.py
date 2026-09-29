@@ -23,7 +23,27 @@ class Message(BaseModel):
 
 
 class LLMError(RuntimeError):
-    """Raised by a provider when it cannot serve a request (triggers fallback)."""
+    """Raised by a provider when it cannot serve a request (triggers fallback).
+
+    `retryable`: worth retrying the SAME provider (rate limit, 5xx, timeout, malformed output).
+    False for errors a retry can't fix (bad key, unknown model, bad request) -> go to the next
+    provider immediately. `retry_after`: seconds the provider asked us to wait, if it said.
+    """
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        retryable: bool = True,
+        retry_after: float | None = None,
+        prefer_failover: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.retryable = retryable
+        self.retry_after = retry_after
+        # Overload / rate limit / transport: another provider in the chain is a better bet than
+        # hammering this one, so retry the same provider only when it is the last real option.
+        self.prefer_failover = prefer_failover
 
 
 @runtime_checkable

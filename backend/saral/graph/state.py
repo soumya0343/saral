@@ -73,7 +73,14 @@ class RunState(BaseModel):
     pending_write: PendingWrite | None = None
     intent_nonce: int = 0  # server-incremented; never from the message body
     step_up_owed: bool = False
+    # Set ONLY by identity on an explicit "yes" to the read-back: the one signal that lets the
+    # action node execute the pending write. A pending write alone never fires.
+    write_confirmed: bool = False
+    # Mixed read + write on a fresh turn: the reads are answered first and this prompt (OTP /
+    # read-back / clarification) is appended; the run then suspends with the identity status.
+    suspend_prompt: str | None = None
     challenge_id: str | None = None  # surfaced to the customer when step-up is requested
+    otp_attempts_left: int = 0  # after a wrong OTP: tries left before escalating
     # Simulated OTP delivery (no SMS): surfaced as a popup event, never written to a message.
     challenge_otp: str | None = None
     # Resume inputs (set on a confirmation/clarification reply; see /conversations/{id}/reply):

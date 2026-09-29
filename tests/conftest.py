@@ -28,6 +28,8 @@ os.environ["EMBEDDER"] = "hashing"
 os.environ["DEMO_MODE"] = "true"
 # Rate limits need Redis; unit/API tests exercise them explicitly (test_ratelimit.py).
 os.environ["RATE_LIMIT_ENABLED"] = "false"
+# No real sleeps between LLM retries in tests.
+os.environ["LLM_BACKOFF_BASE_S"] = "0"
 # API integration tests (tests/test_api_auth.py) need a real, migrated Postgres. They run only
 # when SARAL_TEST_DATABASE_URL is set (CI provides one; locally: any throwaway database).
 if os.environ.get("SARAL_TEST_DATABASE_URL"):

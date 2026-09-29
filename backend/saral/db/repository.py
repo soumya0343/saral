@@ -12,7 +12,8 @@ import hashlib
 import json
 from datetime import UTC, datetime
 
-from sqlalchemy import func, select
+from sqlalchemy import update
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from saral.compliance import audit
 from saral.compliance.pii import redact_pii
@@ -40,6 +41,29 @@ def _redact_dict(d: dict | None) -> dict | None:
 def _tok(*parts: str) -> str:
     """Tokenized ref: a hash standing in for an identifier so the audit log holds no raw PII."""
     return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()[:32]
+
+
+async def allocate_seq(session: AsyncSession, conversation_id: str) -> int:
+    """Next message sequence number for a conversation, allocated atomically.
+
+    The UPDATE row-locks the conversation until the caller's transaction ends, so the API's
+    user turn and the worker's assistant turn can never get the same number.
+    """
+    seq = await session.scalar(
+        update(Conversation)
+        .where(Conversation.id == conversation_id)
+        .values(next_seq=Conversation.next_seq + 1)
+        .returning(Conversation.next_seq)
+    )
+    if seq is None:
+        raise LookupError(f"conversation {conversation_id} not found")
+    return int(seq)
+
+
+async def run_persisted(run_id: str) -> bool:
+    sm = get_sessionmaker()
+    async with sm() as session:
+        return await session.get(AgentRun, run_id) is not None
 
 
 async def persist_run(state: RunState) -> None:
@@ -109,13 +133,7 @@ async def persist_run(state: RunState) -> None:
 
         # Persist the assistant reply so the conversation transcript is complete end-to-end.
         if state.final_response and state.final_response.message:
-            next_seq = (
-                await session.scalar(
-                    select(func.coalesce(func.max(Message.sequence_num), 0) + 1).where(
-                        Message.conversation_id == state.conversation_id
-                    )
-                )
-            ) or 1
+            next_seq = await allocate_seq(session, state.conversation_id)
             session.add(
                 Message(
                     tenant_id=state.tenant_id,

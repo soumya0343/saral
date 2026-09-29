@@ -9,18 +9,27 @@ parse-and-validate (the lowest-common-denominator that works across all three).
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import TypeVar
 
 import httpx
 from pydantic import BaseModel, ValidationError
 
+from saral.llm import usage
 from saral.llm.base import LLMError, Message
 from saral.logging import get_logger
 
 T = TypeVar("T", bound=BaseModel)
 log = get_logger(__name__)
 
+
+
+def _retry_after(resp: httpx.Response) -> float | None:
+    try:
+        return float(resp.headers.get("retry-after", ""))
+    except ValueError:
+        return None
 
 
 def _reasoning_for(model: str) -> tuple[str | None, int]:
@@ -66,7 +75,8 @@ class OpenAICompatProvider:
         self._rr = 0  # round-robin start pointer
         self._model = model
         self._timeout = timeout
-        self.last_total_tokens = 0  # usage from the most recent call (0 if not reported)
+        self._client: httpx.AsyncClient | None = None
+        self._client_loop: asyncio.AbstractEventLoop | None = None
         if name:
             self.name = name
 
@@ -74,29 +84,46 @@ class OpenAICompatProvider:
     def available(self) -> bool:
         return bool(self._keys)
 
+    def _http(self) -> httpx.AsyncClient:
+        """One pooled client per event loop (connection + TLS reuse across calls)."""
+        loop = asyncio.get_running_loop()
+        if self._client is None or self._client_loop is not loop or self._client.is_closed:
+            self._client = httpx.AsyncClient(timeout=self._timeout)
+            self._client_loop = loop
+        return self._client
+
     async def _chat(self, payload: dict) -> str:
         url = f"{self._base_url}/chat/completions"
         n = len(self._keys)
-        last_err: Exception | None = None
+        last_err: LLMError | None = None
         for i in range(n):
             key = self._keys[(self._rr + i) % n]
             headers = {"Authorization": f"Bearer {key}", "Content-Type": "application/json"}
             try:
-                async with httpx.AsyncClient(timeout=self._timeout) as client:
-                    resp = await client.post(url, headers=headers, json=payload)
-                    resp.raise_for_status()
-                    data = resp.json()
+                resp = await self._http().post(url, headers=headers, json=payload)
+                resp.raise_for_status()
+                data = resp.json()
             except httpx.HTTPStatusError as e:
-                last_err = e
-                if e.response.status_code == 429 and n > 1:
+                status = e.response.status_code
+                last_err = LLMError(
+                    f"{self.name} request failed: HTTP {status}",
+                    # 429 (rate limit) and 5xx (overload) can recover; other 4xx (bad key,
+                    # retired model, bad request) will fail the same way again.
+                    retryable=status == 429 or status >= 500,
+                    retry_after=_retry_after(e.response),
+                    prefer_failover=True,
+                )
+                if status == 429 and n > 1:
                     log.info("llm.key_rotate", provider=self.name, reason="429", key_index=i)
                     continue  # this key is rate-limited; try the next one
-                raise LLMError(f"{self.name} request failed: {e}") from e
+                raise last_err from e
+            except (httpx.TimeoutException, httpx.TransportError) as e:
+                raise LLMError(f"{self.name} transport error: {e!r}", prefer_failover=True) from e
             except Exception as e:  # noqa: BLE001 — normalize to LLMError for fallback
                 raise LLMError(f"{self.name} request failed: {e}") from e
             # Success — advance the pointer so the NEXT call starts on a different key (spread).
             self._rr = (self._rr + i + 1) % n
-            self.last_total_tokens = int((data.get("usage") or {}).get("total_tokens") or 0)
+            usage.add(int((data.get("usage") or {}).get("total_tokens") or 0))
             try:
                 content = data["choices"][0]["message"].get("content")
             except (KeyError, IndexError, TypeError) as e:
@@ -104,7 +131,13 @@ class OpenAICompatProvider:
             if not content:
                 raise LLMError(f"{self.name} returned empty content")
             return content
-        raise LLMError(f"{self.name}: all {n} keys rate-limited (429)") from last_err
+        assert last_err is not None
+        raise LLMError(
+            f"{self.name}: all {n} keys rate-limited (429)",
+            retryable=True,
+            retry_after=last_err.retry_after,
+            prefer_failover=True,
+        )
 
     def _payload(self, messages: list[Message], max_tokens: int) -> dict:
         payload: dict = {

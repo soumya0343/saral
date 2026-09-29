@@ -7,6 +7,8 @@ LLMError. The stub is always appended last so the system runs with no API keys.
 
 from __future__ import annotations
 
+import asyncio
+import random
 from functools import lru_cache
 from typing import TypeVar
 
@@ -37,12 +39,48 @@ _REGISTRY: dict[str, type] = {
 _MODEL_OVERRIDABLE = {"gemini", "groq", "cerebras"}
 
 
-class FallbackLLM:
-    """Chains providers; first available that succeeds wins."""
+_MIN_ATTEMPT_S = 2.5  # never give a real provider less than this (unless less is left)
 
-    def __init__(self, providers: list[LLMClient]) -> None:
+
+class _Breaker:
+    """Consecutive-failure circuit breaker for one provider in one chain."""
+
+    __slots__ = ("failures", "open_until")
+
+    def __init__(self) -> None:
+        self.failures = 0
+        self.open_until = 0.0
+
+    def is_open(self, now: float) -> bool:
+        return now < self.open_until
+
+    def success(self) -> None:
+        self.failures = 0
+        self.open_until = 0.0
+
+    def failure(self, now: float, *, hard: bool) -> None:
+        s = get_settings()
+        self.failures += 1
+        # A non-retryable error (bad key / retired model) opens it at once: it won't heal soon.
+        if hard or self.failures >= s.llm_breaker_threshold:
+            self.open_until = now + s.llm_breaker_cooldown_s
+
+
+class FallbackLLM:
+    """Chains providers; the first available one that succeeds wins.
+
+    - A per-role deadline bounds the whole call (retries + fallbacks); when it runs out, only
+      the deterministic stub (instant) is still tried, so callers always get an answer fast.
+    - Same-provider retries only for retryable errors (429, 5xx, timeout, malformed output),
+      with jittered exponential backoff, honouring Retry-After when it fits in the deadline.
+    - A circuit breaker skips a provider that keeps failing, so a dead model costs ~0 ms per
+      turn instead of a full timeout.
+    """
+
+    def __init__(self, providers: list[LLMClient], deadline_s: float | None = None) -> None:
         self.providers = providers
-        self.last_tokens = 0  # total tokens from the most recent successful call
+        self.deadline_s = deadline_s
+        self._breakers: dict[int, _Breaker] = {id(p): _Breaker() for p in providers}
 
     @property
     def name(self) -> str:
@@ -66,33 +104,78 @@ class FallbackLLM:
         return await self._run("structured", messages, schema, max_tokens=max_tokens)
 
     async def _run(self, method: str, *args, **kwargs):
+        s = get_settings()
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self.deadline_s if self.deadline_s else None
         last_err: Exception | None = None
-        retries = get_settings().llm_retry_cap
-        for provider in self.providers:
-            if not provider.available:
+
+        def remaining() -> float | None:
+            return None if deadline is None else deadline - loop.time()
+
+        live = [p for p in self.providers if p.available]
+        for idx, provider in enumerate(live):
+            is_stub = provider.name == "stub"
+            # Real providers still after this one (breaker-open ones don't count).
+            later_real = [
+                p
+                for p in live[idx + 1 :]
+                if p.name != "stub" and not self._breakers[id(p)].is_open(loop.time())
+            ]
+            breaker = self._breakers.setdefault(id(provider), _Breaker())
+            if not is_stub and breaker.is_open(loop.time()):
+                log.info("llm.breaker_open", provider=provider.name, method=method)
                 continue
-            # Retry the same provider a few times (handles malformed/parse errors via
-            # re-prompt) before falling through to the next provider.
-            for attempt in range(retries + 1):
+            for attempt in range(s.llm_retry_cap + 1):
+                left = remaining()
+                if not is_stub and left is not None and left <= 0:
+                    break  # budget spent: skip straight to the (instant) stub floor
+                # Fair share: one slow provider can't eat the budget of the ones after it.
+                budget = left
+                if left is not None and not is_stub and later_real:
+                    budget = max(left / (len(later_real) + 1), min(_MIN_ATTEMPT_S, left))
                 try:
-                    result = await getattr(provider, method)(*args, **kwargs)
-                    self.last_tokens = getattr(provider, "last_total_tokens", 0)
-                    if provider.name == "stub" and self.has_real_provider:
-                        # Real keys are set but every real model failed: the turn is served by
-                        # the deterministic floor. Loud, so free-tier drift is never silent.
-                        log.error("llm.served_by_stub", method=method, last_error=str(last_err))
-                    return result
-                except LLMError as e:
-                    last_err = e
+                    call = getattr(provider, method)(*args, **kwargs)
+                    timed = budget is not None and not is_stub
+                    result = await (asyncio.wait_for(call, budget) if timed else call)
+                except (LLMError, TimeoutError) as e:
+                    err = e if isinstance(e, LLMError) else LLMError(
+                        f"{provider.name} exceeded its time budget", prefer_failover=True
+                    )
+                    last_err = err
+                    breaker.failure(loop.time(), hard=not err.retryable)
+                    final = (
+                        attempt >= s.llm_retry_cap
+                        or not err.retryable
+                        or (err.prefer_failover and bool(later_real))
+                    )
                     log.warning(
-                        "llm.retry" if attempt < retries else "llm.fallback",
+                        "llm.fallback" if final else "llm.retry",
                         provider=provider.name,
                         method=method,
                         attempt=attempt,
-                        error=str(e),
+                        error=str(err),
                     )
+                    if final:
+                        break
+                    await self._backoff(attempt, err.retry_after, remaining())
                     continue
+                breaker.success()
+                if is_stub and self.has_real_provider:
+                    # Real keys are set but every real model failed: the turn is served by
+                    # the deterministic floor. Loud, so free-tier drift is never silent.
+                    log.error("llm.served_by_stub", method=method, last_error=str(last_err))
+                return result
         raise LLMError(f"all providers failed for {method}: {last_err}")
+
+    @staticmethod
+    async def _backoff(attempt: int, retry_after: float | None, left: float | None) -> None:
+        base = get_settings().llm_backoff_base_s
+        delay = retry_after if retry_after is not None else base * (2**attempt)
+        delay += random.uniform(0, base)  # noqa: S311 — jitter, not crypto
+        if left is not None:
+            delay = min(delay, max(left - 0.05, 0.0))
+        if delay > 0:
+            await asyncio.sleep(delay)
 
 
 @lru_cache
@@ -117,5 +200,6 @@ def get_llm(role: str = "default") -> FallbackLLM:
             providers.append(cls())
     if not any(p.name == "stub" for p in providers):
         providers.append(StubProvider())
-    log.info("llm.configured", role=role, chain=[p.name for p in providers])
-    return FallbackLLM(providers)
+    deadline = settings.role_deadline(role)
+    log.info("llm.configured", role=role, chain=[p.name for p in providers], deadline_s=deadline)
+    return FallbackLLM(providers, deadline_s=deadline)
