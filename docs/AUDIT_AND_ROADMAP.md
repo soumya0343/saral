@@ -17,10 +17,11 @@ ones marked **(repro'd)** were confirmed by running the code during the audit.
 | 1 — Correctness & reliability | ✅ done | 1.1 atomic seq counter + commit-before-enqueue · 1.2 retried/loud persist · 1.3 async Postgres checkpointer (crash-resume proven across processes; finished checkpoints deleted) · 1.4 mixed read+write answers the read · 1.5 OTP retry budget · 1.6 worker concurrency + per-conversation ordering + heartbeat, LLM deadlines/failover/breaker, LID ‖ classify · 1.7 replayable trace stream (run_id + Last-Event-ID) · 1.8 per-run token usage · 1.9 store calls off the event loop. |
 | 2 — Honest eval | ✅ done | Judge sees the reply · reply-level metrics (language match, answer correctness, faithfulness, false-block rate, multi-turn, pass by language) · offline + live tiers (tier derived from config) · pinned live judge (different family, no fallback, abort + `--resume`) · 25 multi-turn conversations driven through the API's own resume logic · 34-case injection set (attacks + benign look-alikes) · human labels bound to exact live replies (κ only from those) · CI gate vs committed baseline (`data/eval_baselines/offline.json`). |
 | 2 — first live run | ✅ 22-scenario sample (2026-09-29) | judge `groq:qwen/qwen3.8-27b` (pinned) · pass 63.6% (EN 71% · HI 50% · Hinglish 71%) · language match 91% · answer correctness 78% · faithfulness 100% · false-block 100% on the 2 look-alikes sampled · p50/p95 2.5 s / 22 s · 36k tokens. Judge **not yet validated** (0 human labels): run `make eval-labels` and label. Live-only defects found → Phase 3: **(L1)** LLM triage drops `get_claim_status` in Hindi/mixed messages and retrieval then answers about a *different* claim (CLM2010 for a CLM2001 question) — retrieval must honour the claim id asked about; **(L2)** Hindi "what does my policy cover" mis-routed to a policy lookup, English "Which policy ID?" reply; **(L3)** LLM phrasing drops the clause number ("6.2") from correct lapse explanations; **(L4)** p95 22 s — Gemini 503s + Groq 429s under a sequential suite. |
-| 3 → 7 | ⏳ next | Phase 3 (differentiator quality) now has a yardstick: offline baseline pass 63.6% (EN 84% · HI 54% · Hinglish 41%), language match 72%, answer correctness 31%, attacks blocked 89%, false-block 50%. |
+| 3 — Differentiator quality | ✅ mostly (see "Phase 3 — outcome") | L1–L3 fixed; 3.1/3.5/3.6/3.7/3.8 done; 3.2 without pgvector; 3.4 without NLI; 3.3 floor target not reachable with free local models; 3.9 rules plateau ~63% on blind attacks — classifier needed. Offline pass 63.6% → 87.0%, false blocks 50% → 0%. |
+| 4 → 7 | ⏳ next | Phase 4 (RM request quality) next. Open from Phase 3: injection classifier (needs HF licence), answerability check for the floor, pgvector if scale needs it. |
 
-Open items found while implementing: the capability guard still suppresses writes message-wide
-("How do I pay? Also update my email" → no write; 3.6), Gemini free Flash is often overloaded
+Open items found while implementing: ~~the capability guard suppresses writes message-wide~~
+(fixed in 3.6), Gemini free Flash is often overloaded
 (503/slow — synthesis frequently served by Groq gpt-oss-120b; ~6–8 s), and hero U1003's data still
 frames her as the deceased claimant (D11).
 
@@ -573,6 +574,36 @@ throughout. Real providers stay free-tier (ADR-0003).
 | 3.7 | `list_claims` / `list_policies` tools + disambiguation; multi-policy seed data | `tools/`, `agents/action.py`, manifest | "What about my other policy?" works. A missing claim id asks which claim. |
 | 3.8 | Expand the generic corpus to ~50 docs with HI parallels for the top 15 FAQs | `data/policy_corpus/` | Generic HI questions have a grounded answer in the live eval. |
 | 3.9 | Injection defense v2: Prompt Guard 2 86M (free, local; see 6.3d) on the message + passage screening + delimited context | `agents/triage.py`, `compliance/injection.py`, `agents/synthesis.py` | FP rate on benign look-alikes < 2% with block rate at 100% on the attack set. |
+
+#### Phase 3 — outcome (2026-09-29)
+
+| # | State | What shipped / what the numbers say |
+|---|---|---|
+| L1 | ✅ | Retrieval honours the claim/policy the customer named: manifest docs carry `about: [CLM…, POL…]` and a named id drops documents about a *different* id of that kind (`rag/customer_index._anchored`). Triage adds a deterministic floor under the LLM: an explicit, id-bearing read it drops is restored (`triage._reconcile`). |
+| L2 | ✅ | A policy "lookup" with no id and no lookup phrasing is an information question (`_reconcile`); id-less reads answer for all of the customer's own rows instead of "Which policy ID?". |
+| L3 | ✅ | Prompt keeps clause numbers; `ensure_clause` re-appends the clause the answer rests on if the model drops it. |
+| 3.1 | ✅ | `rag/chunking.py`: heading path attached to every paragraph (and embedded with it), `clause_id` + clause refs; citations `policy_schedule.md#4.1`. Claim notes cite by position (they *mention* 6.2, they aren't clause 6.2). |
+| 3.2 | ◐ | Generated EN+HI policy schedule / claim note for every policy and claim without an authored doc (`rag/customer_docs.py`), rebuilt when the rows change — sandbox / thin customers and newly filed claims are groundable. **pgvector deferred**: in-memory per-customer indexes are enough at demo scale and keep free hosting simple. |
+| 3.3 | ❌ target not met | `make calibrate-floor` on 66 answerable / 47 unanswerable queries: e5 floor 0.827 keeps 95.5% answerable but escalates only 83% unanswerable, and would wrongly escalate 6/35 short real scenario questions. A free 118M multilingual cross-encoder (mmarco-mMiniLMv2) was *worse* (28% at the same recall; 0/11 Hinglish) and was removed. Floor stays 0.0. Next: bge-reranker-v2-m3 (568M) or an LLM answerability check. |
+| 3.4 | ◐ | Sources/actions passed as delimited `<source>` / `<action>` data; model returns `USED: S1,S2` → only used citations shown; deterministic polarity check (covered ↔ not covered, देय ↔ देय नहीं) rejects flipped phrasing on top of the numeric/id check. No NLI model / second LLM call (quota + latency on free tiers). |
+| 3.5 | ✅ | Every deterministic template localized (action summaries, not-found, degraded notice, default help); gender-neutral Hindi clarify prompts; extractive fallback picks the best-matching sentence across the top passages (clause-bearing sentences favoured for "why"; metadata headers skipped). Remaining offline language misses are cross-language documents (EN customer ↔ Hindi hero docs, all Hinglish) — the offline tier has no translator; the live LLM does that. |
+| 3.6 | ✅ | Whole-word lexicons (`hi` ∉ "this", `cover` ∉ "discover", `do i` ≠ "do it"); scored Hinglish detection (`claim reject kyun hua` → hinglish); history domain only on real past references; capability guard per sentence ("How do I pay? Also update my email…" keeps the write); meta follow-ups ("samajh nahi aaya") → information; COMPLAINT → empathy + ticket offer, repeat → escalation `repeated_complaint`; `UNSUPPORTED` language (Tamil/Bengali/Urdu script, Sarvam non-en/hi) → bilingual reply, no reads/writes. |
+| 3.7 | ✅ (changed) | `list_claims` / `list_policies`; customer context fills a single id only when unambiguous. Instead of asking "which claim?", an id-less read **answers for all** of the customer's claims/policies (a status question has an answer for each). U1002 now holds two policies. |
+| 3.8 | ✅ | Generic corpus 10 → 53 docs (28 new EN, 15 HI parallels), numbers cross-checked against existing docs and hero files; new facts invented for fictional products are listed in the agent report. Customer-language version preferred when both surface. |
+| 3.9 | ◐ | Guard v2 matches attack *structure* (override, persona, fake role tags, prompt extraction, bulk exfiltration, verification bypass, impersonation+privileged ask) after normalization (NFKC, zero-width, spaced letters incl. Devanagari, leetspeak); lone "approve my refund" is no longer an attack (no approve tool exists). Passage screening drops retrieved chunks carrying model-directed instructions. Optional local classifier hook (`INJECTION_CLASSIFIER_MODEL`, Prompt Guard 2 — gated, needs HF_TOKEN). In-suite: 16/16 attacks, 0/18 look-alikes. **Blind held-out** (`make eval-heldout`): set 1 first read 17/35 attacks / 0/35 FP (v1: 8/35, 1/35), then used for tuning; set 2 first read **25/40 attacks, 1/40 FP** (v1: 6/40, 0/40). Target (100% / <2%) needs the classifier. |
+
+**Offline tier (154 scenarios):** pass 63.6% → **87.0%** (EN 84→93%, HI 54→93%, Hinglish 41→71%) · attacks blocked 89→**100%** · false blocks 50→**0%** · language match 72→88% · answer correctness 31→77% · multi-turn 96→100% · routing 99→100%. New baseline committed-to-be in `data/eval_baselines/offline.json`.
+
+**Live tier (same 22-scenario sample as the first live run, judge `groq:qwen/qwen3.8-27b`):**
+pass 63.6% → **86.4%** (EN 71→71% · HI 50→88% · Hinglish 71→100%) · language match 91→100% ·
+answer correctness 78→100% · attacks blocked 50→100% · false blocks 100→0% · faithfulness 94%
+(the one miss was a clause number appended to a reply that used no source — fixed after the run,
+re-check passes) · p50/p95 4.6 s / 21 s · 41k tokens. L1 confirmed fixed live: "क्लेम CLM2001 का
+स्टेटस?" now answers CLM2001 correctly (its only miss, a mixed route, is fixed and re-checked).
+Still failing: a health-only customer asking "when will you approve my loan?" gets a generic
+offer to help (should say there's no loan on file + general timelines); and one judge error — it
+failed `mt_mixed_read_write_en` for not repeating the claim status answered two turns earlier.
+The judge is still **unvalidated** (0 human labels) — `make eval-labels` is the next human step.
 
 ### Phase 4 — Close the product loops (≈1–2 weeks) · adjacent problem A + D12
 

@@ -25,6 +25,8 @@ type Customer = {
   returning: boolean;
   policy_id?: string | null;
   claim_id?: string | null;
+  policy_ids?: string[];
+  claim_ids?: string[];
 };
 
 type CustomerSession = Customer & { tokens: Tokens };
@@ -582,7 +584,7 @@ export default function App() {
     const intro = c.returning
       ? `Welcome back, ${c.name}. How can I help with your policy or account?`
       : `Hi ${c.name}, you're verified. I've set up your account` +
-        (c.policy_id ? ` (policy ${c.policy_id}, claim ${c.claim_id})` : "") +
+        (c.policy_id ? ` (policy ${c.policy_id}${c.claim_id ? `, claim ${c.claim_id}` : ""})` : "") +
         `. How can I help?`;
     setTurns(greet ? [{ role: "assistant", text: intro, status: "resolved" }] : []);
     refreshConvos();
@@ -724,7 +726,9 @@ export default function App() {
           <h1 className="text-2xl font-semibold">सरल · Saral</h1>
           <p className="text-sm text-neutral-500">
             {customer.name} · {customer.user_id}
-            {customer.policy_id && ` · ${customer.policy_id}`}
+            {(customer.policy_ids?.length ? customer.policy_ids : customer.policy_id ? [customer.policy_id] : [])
+              .map((p) => ` · ${p}`)
+              .join("")}
           </p>
         </div>
         <div className="flex items-center gap-3 text-sm text-neutral-500">

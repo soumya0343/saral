@@ -22,11 +22,42 @@ async def test_get_claim_status(agent):
     assert recs[0].result["status"] == "under_review"
 
 
-async def test_missing_claim_id_asks(agent):
+async def test_missing_claim_id_lists_all_own_claims(agent):
+    """No claim named and several on the account: answer for all of them (D8), never the
+    first one silently, never "you have no claims"."""
+    from saral.agents.synthesis import _action_summary
+    from saral.schemas import Language
+
     intents = [Intent(type=IntentType.ACTION, action="get_claim_status")]
     recs = await agent.run(intents, {}, "U1001", "run1", "claim status")
-    assert recs[0].needs_clarification
-    assert not recs[0].ok
+    assert recs[0].ok
+    ids = [c["claim_id"] for c in recs[0].result["claims"]]
+    assert ids == ["CLM2001", "CLM2010"]
+    assert "CLM2001" in _action_summary(recs[0], Language.HI)
+    assert "2 क्लेम" in _action_summary(recs[0], Language.HI)
+
+
+async def test_missing_claim_id_no_claims(agent):
+    from saral.agents.synthesis import _action_summary
+    from saral.schemas import Language
+
+    intents = [Intent(type=IntentType.ACTION, action="get_claim_status")]
+    recs = await agent.run(intents, {}, "U1020", "run1", "claim status")
+    assert recs[0].ok and recs[0].result["claims"] == []
+    assert "कोई क्लेम" in _action_summary(recs[0], Language.HI)
+
+
+async def test_missing_policy_id_lists_all_own_policies(agent):
+    intents = [Intent(type=IntentType.ACTION, action="get_policy_details")]
+    recs = await agent.run(intents, {}, "U1002", "run1", "my policy details")
+    assert [p["policy_id"] for p in recs[0].result["policies"]] == ["POL1002", "POL1012"]
+
+
+def test_customer_context_only_fills_unambiguous_ids():
+    ctx = mb.get_customer_context("U1001")  # 1 policy, 2 claims
+    assert ctx["policy_id"] == "POL1001"
+    assert "claim_id" not in ctx
+    assert ctx["claim_ids"] == ["CLM2001", "CLM2010"]
 
 
 async def test_write_executes_only_via_confirmed_pending(agent):

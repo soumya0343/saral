@@ -56,5 +56,11 @@ eval-baseline: ## Re-baseline the offline tier after a genuine improvement (comm
 eval-live: ## Live eval with the real free models from .env (throttled; ARGS="--limit 20" / "--resume")
 	PYTHONPATH=backend uv run python -m saral.eval.runner --tier live $(ARGS)
 
+eval-heldout: ## Injection guard on the blind held-out sets (not gated; see saral/eval/heldout.py)
+	LOG_LEVEL=ERROR PYTHONPATH=backend uv run python -m saral.eval.heldout
+
+calibrate-floor: ## Retrieval score-floor calibration for the active embedder (needs e5 locally)
+	LOG_LEVEL=ERROR PYTHONPATH=backend uv run python scripts/calibrate_floor.py
+
 eval-labels: ## Add the latest live run's replies to data/eval_labels/live_labels.yaml for human labelling
 	PYTHONPATH=backend uv run python -m saral.eval.labels export

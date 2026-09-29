@@ -14,6 +14,14 @@ adjudication notes, and history — not a generic FAQ template (TRD §12.3, FR-1
   - **U1010 — रमेश अय्यर** (Hindi, health floater) — rejected CI-rider claim, Clause R1.3.
 - **Thin customers** (`is_hero: false`) — structured rows only, for statistical N and
   cross-customer leak tests. No authored documents.
+- **Generated documents** — every policy and claim WITHOUT an authored document (thin and
+  sandbox customers, CLM2001 on U1001, a claim just filed through the agent) gets a policy
+  schedule / claim status note rendered from its row in English and Hindi
+  (`backend/saral/rag/customer_docs.py`), re-rendered when the rows change. They state only
+  the row plus the product's standard terms, so nobody is ungroundable.
+- **`about`** on a manifest document names the policy / claim it describes. When a customer
+  names a claim or policy, retrieval drops documents about a *different* one of that kind — a
+  CLM2001 question is never answered from the CLM2010 note.
 
 ## The five data domains (purpose-limitation unit)
 

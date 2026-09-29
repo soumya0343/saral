@@ -58,8 +58,10 @@ def _grade(ctx: dict) -> JudgeVerdict:
         checks.append(ok)
         reasons.append(f"route {'ok' if ok else 'mismatch'}")
 
-    # Information answers must be grounded (carry citations).
-    if ctx.get("category") == "information":
+    # Information answers must be grounded (carry citations). A turn answered from an account
+    # lookup (route=action) is grounded in the tool result instead — e.g. the status question
+    # that ends an information conversation.
+    if ctx.get("category") == "information" and got.get("route") != "action":
         ok = bool(got.get("citations"))
         checks.append(ok)
         reasons.append(f"grounded {'ok' if ok else 'no-citations'}")

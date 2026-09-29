@@ -51,7 +51,9 @@ def test_requires_name_and_contact():
 def test_customer_context_returns_owned_ids():
     ctx = mb.get_customer_context("U1001")
     assert ctx["policy_id"] == "POL1001"
-    assert ctx["claim_id"] == "CLM2001"
+    # Two claims on the account: no single claim_id is guessed, both are listed.
+    assert ctx["claim_ids"] == ["CLM2001", "CLM2010"]
+    assert "claim_id" not in ctx
 
 
 async def test_my_claim_status_resolves_via_known_entities():

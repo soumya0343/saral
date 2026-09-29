@@ -433,6 +433,25 @@ class Store:
                 raise ToolError(f"policy {policy_id} not found")
             return self._policy(p)
 
+    def list_policies(self, user_id: str) -> list[Policy]:
+        with Session(self.engine) as s:
+            rows = s.scalars(
+                select(MPolicy)
+                .where(MPolicy.holder_user_id == user_id)
+                .order_by(MPolicy.policy_id)
+            ).all()
+            return [self._policy(p) for p in rows]
+
+    def list_claims(self, user_id: str) -> list[ClaimStatus]:
+        with Session(self.engine) as s:
+            rows = s.scalars(
+                select(MClaim)
+                .join(MPolicy, MPolicy.policy_id == MClaim.policy_id)
+                .where(MPolicy.holder_user_id == user_id)
+                .order_by(MClaim.claim_id)
+            ).all()
+            return [self._claim(c) for c in rows]
+
     # --- state-changing (idempotent) ---
     def update_contact(
         self, user_id: str, field: str, value: str, idempotency_key: str
@@ -594,13 +613,25 @@ class Store:
 
     @staticmethod
     def _context(s: Session, user_id: str) -> dict:
-        ctx: dict = {}
-        pol = s.scalar(select(MPolicy).where(MPolicy.holder_user_id == user_id))
-        if pol:
-            ctx["policy_id"] = pol.policy_id
-            claim = s.scalar(select(MClaim).where(MClaim.policy_id == pol.policy_id))
-            if claim:
-                ctx["claim_id"] = claim.claim_id
+        """The customer's own ids, so "my claim" / "my policy" resolve without an id. A single
+        id is filled in only when it is unambiguous; with several, the lists let the agent ask
+        which one instead of silently picking the first."""
+        policies = s.scalars(
+            select(MPolicy.policy_id)
+            .where(MPolicy.holder_user_id == user_id)
+            .order_by(MPolicy.policy_id)
+        ).all()
+        claims = s.scalars(
+            select(MClaim.claim_id)
+            .join(MPolicy, MPolicy.policy_id == MClaim.policy_id)
+            .where(MPolicy.holder_user_id == user_id)
+            .order_by(MClaim.claim_id)
+        ).all()
+        ctx: dict = {"policy_ids": list(policies), "claim_ids": list(claims)}
+        if len(policies) == 1:
+            ctx["policy_id"] = policies[0]
+        if len(claims) == 1:
+            ctx["claim_id"] = claims[0]
         return ctx
 
 

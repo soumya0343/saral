@@ -1,0 +1,128 @@
+# Labelled queries for calibrating retrieval_score_floor (answerable vs unanswerable).
+# `doc` is the generic-corpus file (data/policy_corpus/) that answers the query. Hindi
+# (Devanagari) queries name the `_hi.md` parallel when one exists, else the English doc
+# (cross-lingual retrieval); treat `<stem>.md` and `<stem>_hi.md` as equivalent hits.
+# Unanswerable queries are adjacent-but-uncovered finance/insurance topics or off-topic
+# chatter; none is answerable from any file in data/policy_corpus/.
+answerable:
+  # ---- English ----
+  - {q: "What is the waiting period for pre-existing diseases?", doc: pre_existing_waiting_period.md, lang: en}
+  - {q: "my dad has had diabetes for years, when will his hospital bills start getting covered?", doc: pre_existing_waiting_period.md, lang: en}
+  - {q: "How do I get cashless treatment when I'm admitted?", doc: cashless_claims.md, lang: en}
+  - {q: "hospital says pre-auth was denied, can I still claim the money later?", doc: cashless_claims.md, lang: en}
+  - {q: "How do I find out if a hospital near me is in your network?", doc: network_hospitals.md, lang: en}
+  - {q: "Is childbirth covered under my health insurance?", doc: maternity_cover.md, lang: en}
+  - {q: "is dialysis covered even though I go home the same day?", doc: day_care_procedures.md, lang: en}
+  - {q: "Why did they cut my surgeon fees just because I took a bigger room?", doc: room_rent_limits.md, lang: en}
+  - {q: "What does a 10% co-pay actually mean for my claim?", doc: co_payment.md, lang: en}
+  - {q: "Is there a deductible on my health plan?", doc: co_payment.md, lang: en}
+  - {q: "Does my cover increase if I don't make any claim this year?", doc: no_claim_bonus.md, lang: en}
+  - {q: "Can I move my health policy to another company without losing the waiting period I've served?", doc: policy_renewal_portability.md, lang: en}
+  - {q: "I just bought the policy and don't like it, can I return it and get my money back?", doc: free_look_period.md, lang: en}
+  - {q: "I missed my term premium due date last week, am I still covered?", doc: grace_period_lapse_revival.md, lang: en}
+  - {q: "How can I restart a term plan that lapsed two years ago?", doc: grace_period_lapse_revival.md, lang: en}
+  - {q: "How do I change the nominee on my policy?", doc: nominee_registration.md, lang: en}
+  - {q: "What papers does the family need to submit for a term insurance death claim?", doc: term_life_death_claim.md, lang: en}
+  - {q: "Do I get anything back from term insurance if I survive till the end?", doc: term_life_coverage.md, lang: en}
+  - {q: "Which illnesses does the critical illness rider pay for?", doc: riders.md, lang: en}
+  - {q: "What's the difference between third party and comprehensive car insurance?", doc: motor_od_vs_third_party.md, lang: en}
+  - {q: "I sold my old car, can I keep my no claim bonus for the new one?", doc: motor_ncb_transfer.md, lang: en}
+  - {q: "What documents do I need to claim for my car after an accident?", doc: motor_claim_documents.md, lang: en}
+  - {q: "is the zero dep add-on worth it, what does it actually cover?", doc: zero_depreciation_addon.md, lang: en}
+  - {q: "What is the minimum income needed to get a personal loan?", doc: personal_loan_eligibility.md, lang: en}
+  - {q: "Can I close my personal loan early, and what's the penalty?", doc: loan_foreclosure_prepayment.md, lang: en}
+  - {q: "My EMI bounced, will it hurt my credit score?", doc: emi_bounce_credit_score.md, lang: en}
+  - {q: "Where do I get the interest certificate for my loan?", doc: loan_statement_certificates.md, lang: en}
+  - {q: "How much tax can I save on my health insurance premium?", doc: tax_benefits.md, lang: en}
+  - {q: "Someone called asking for my OTP to process my claim, was that you?", doc: fraud_awareness.md, lang: en}
+  - {q: "It's been 20 days and my complaint is still open, where do I escalate?", doc: complaint_escalation_timelines.md, lang: en}
+  - {q: "How do I download a copy of my policy?", doc: policy_documents_download.md, lang: en}
+  - {q: "I moved house, how do I update my address?", doc: kyc_document_updates.md, lang: en}
+  - {q: "How much ambulance cost will you reimburse?", doc: health_coverage.md, lang: en}
+  - {q: "is dental treatment covered?", doc: health_exclusions.md, lang: en}
+  - {q: "How long does a reimbursement claim take to get paid?", doc: claims_process.md, lang: en}
+  - {q: "Does my car policy include personal accident cover for me as the driver?", doc: motor_coverage.md, lang: en}
+  # ---- Hindi (Devanagari) ----
+  - {q: "पुरानी बीमारी वाला क्लेम कितने समय बाद मिलेगा?", doc: pre_existing_waiting_period_hi.md, lang: hi}
+  - {q: "कैशलेस इलाज के लिए अस्पताल में क्या करना होगा?", doc: cashless_claims_hi.md, lang: hi}
+  - {q: "रीइम्बर्समेंट क्लेम के कागज़ कितने दिन में जमा करने हैं?", doc: claims_process_hi.md, lang: hi}
+  - {q: "प्रीमियम की तारीख निकल गई, अब मेरी पॉलिसी का क्या होगा?", doc: grace_period_lapse_revival_hi.md, lang: hi}
+  - {q: "हेल्थ पॉलिसी में दाँत का इलाज कवर है क्या?", doc: health_exclusions_hi.md, lang: hi}
+  - {q: "एम्बुलेंस का कितना पैसा वापस मिलता है?", doc: health_coverage_hi.md, lang: hi}
+  - {q: "मेरा मोबाइल नंबर मेरे बेटे की तरफ़ से बदला जा सकता है क्या?", doc: contact_update_rules_hi.md, lang: hi}
+  - {q: "मेरी शिकायत का जवाब कितने दिन में आएगा?", doc: grievance_redressal_hi.md, lang: hi}
+  - {q: "ईएमआई की तारीख बदलवानी है, क्या यह हो सकता है?", doc: loan_emi_faq_hi.md, lang: hi}
+  - {q: "लोन जल्दी बंद करने पर कितना चार्ज लगेगा?", doc: loan_foreclosure_prepayment_hi.md, lang: hi}
+  - {q: "पॉलिसी में नॉमिनी का नाम कैसे बदलें?", doc: nominee_registration_hi.md, lang: hi}
+  - {q: "नई पॉलिसी पसंद नहीं आई, क्या पैसा वापस मिलेगा?", doc: free_look_period_hi.md, lang: hi}
+  - {q: "एक साल कोई क्लेम नहीं किया तो क्या फ़ायदा मिलेगा?", doc: no_claim_bonus_hi.md, lang: hi}
+  - {q: "मेरी पॉलिसी की जानकारी किसी और को तो नहीं बताई जाती?", doc: data_privacy_hi.md, lang: hi}
+  - {q: "प्रीमियम किन-किन तरीकों से भर सकते हैं?", doc: premium_payment_hi.md, lang: hi}
+  - {q: "पुरानी कार बेचने के बाद मेरे एनसीबी का क्या होगा?", doc: motor_ncb_transfer.md, lang: hi}
+  - {q: "हेल्थ इंश्योरेंस प्रीमियम पर टैक्स में कितनी छूट मिलती है?", doc: tax_benefits.md, lang: hi}
+  - {q: "कोई फ़ोन पर OTP माँग रहा है, क्या दे दूँ?", doc: fraud_awareness.md, lang: hi}
+  # ---- Hinglish (Roman) ----
+  - {q: "cashless claim ke liye hospital mein kya dikhana padta hai?", doc: cashless_claims.md, lang: hinglish}
+  - {q: "pre existing disease kab se cover hogi meri policy mein?", doc: pre_existing_waiting_period.md, lang: hinglish}
+  - {q: "term plan lapse ho gaya, revive kaise karu?", doc: grace_period_lapse_revival.md, lang: hinglish}
+  - {q: "delivery ka kharcha cover hota hai kya health policy mein?", doc: maternity_cover.md, lang: hinglish}
+  - {q: "bada room lene se claim kam kyun milta hai?", doc: room_rent_limits.md, lang: hinglish}
+  - {q: "personal loan ke liye kitni salary chahiye?", doc: personal_loan_eligibility.md, lang: hinglish}
+  - {q: "EMI bounce hone se credit score pe kya asar padega?", doc: emi_bounce_credit_score.md, lang: hinglish}
+  - {q: "car accident claim ke liye kaunse documents lagenge?", doc: motor_claim_documents.md, lang: hinglish}
+  - {q: "zero dep mein tyre cover hota hai kya?", doc: zero_depreciation_addon.md, lang: hinglish}
+  - {q: "loan poora chukane ke baad NOC kitne din mein milega?", doc: loan_statement_certificates.md, lang: hinglish}
+  - {q: "nominee change karna hai, kaise hoga?", doc: nominee_registration.md, lang: hinglish}
+  - {q: "complaint 15 din mein solve nahi hui, ab ombudsman ke paas ja sakte hai?", doc: complaint_escalation_timelines.md, lang: hinglish}
+
+unanswerable:
+  # ---- English ----
+  - {q: "Do you offer pet insurance for my dog?", lang: en}
+  - {q: "How do I apply for crop insurance for my wheat farm?", lang: en}
+  - {q: "What is today's NAV of a flexi-cap mutual fund?", lang: en}
+  - {q: "How can I get my credit card limit increased?", lang: en}
+  - {q: "Can I transfer my home loan balance to get a lower rate?", lang: en}
+  - {q: "What is the interest rate on a gold loan?", lang: en}
+  - {q: "Does travel insurance cover a Schengen visa rejection?", lang: en}
+  - {q: "Which stocks should I buy this week?", lang: en}
+  - {q: "What are the fixed deposit rates for senior citizens?", lang: en}
+  - {q: "Does home insurance cover damage from a burst water pipe?", lang: en}
+  - {q: "How do I start a SIP?", lang: en}
+  - {q: "What is the surrender value of my ULIP after 5 years?", lang: en}
+  - {q: "How do I open a demat account?", lang: en}
+  - {q: "Do you sell shop insurance to cover my store's inventory against burglary?", lang: en}
+  - {q: "What is the current repo rate?", lang: en}
+  - {q: "How do I claim marine cargo insurance for a damaged shipment?", lang: en}
+  - {q: "Does an education loan have a moratorium period?", lang: en}
+  - {q: "What documents are needed for an MSME working capital loan?", lang: en}
+  - {q: "What's the dollar to rupee exchange rate today?", lang: en}
+  - {q: "What's the weather in Mumbai tomorrow?", lang: en}
+  - {q: "What was the score in yesterday's India match?", lang: en}
+  - {q: "How do I make paneer butter masala?", lang: en}
+  - {q: "Can you book a flight ticket for me?", lang: en}
+  # ---- Hindi (Devanagari) ----
+  - {q: "क्या आप पालतू कुत्ते का बीमा करते हैं?", lang: hi}
+  - {q: "फसल बीमा के लिए आवेदन कैसे करें?", lang: hi}
+  - {q: "म्यूचुअल फ़ंड का आज का NAV क्या है?", lang: hi}
+  - {q: "क्रेडिट कार्ड की लिमिट कैसे बढ़वाएँ?", lang: hi}
+  - {q: "होम लोन बैलेंस ट्रांसफर करने पर कितना ब्याज बचेगा?", lang: hi}
+  - {q: "गोल्ड लोन पर ब्याज दर कितनी है?", lang: hi}
+  - {q: "ट्रैवल इंश्योरेंस में वीज़ा रिजेक्शन कवर होता है क्या?", lang: hi}
+  - {q: "किस कंपनी के शेयर में पैसा लगाना अच्छा रहेगा?", lang: hi}
+  - {q: "एफ़डी पर सबसे ज़्यादा ब्याज कहाँ मिलता है?", lang: hi}
+  - {q: "एजुकेशन लोन की मोरेटोरियम अवधि कितनी होती है?", lang: hi}
+  - {q: "आज दिल्ली में मौसम कैसा रहेगा?", lang: hi}
+  - {q: "कल के क्रिकेट मैच में कौन जीता?", lang: hi}
+  - {q: "पनीर बटर मसाला बनाने की विधि बताइए।", lang: hi}
+  # ---- Hinglish (Roman) ----
+  - {q: "pet insurance milta hai kya aapke yahan?", lang: hinglish}
+  - {q: "gold loan ka interest rate kitna hai?", lang: hinglish}
+  - {q: "credit card ki limit kaise badhaye?", lang: hinglish}
+  - {q: "SIP kaise start karu mutual fund mein?", lang: hinglish}
+  - {q: "home loan balance transfer karna hai, process kya hai?", lang: hinglish}
+  - {q: "crop insurance ka claim kaise karte hai?", lang: hinglish}
+  - {q: "travel insurance mein flight delay cover hota hai kya?", lang: hinglish}
+  - {q: "kaunsa stock kharidu abhi?", lang: hinglish}
+  - {q: "aaj ka cricket score kya hai?", lang: hinglish}
+  - {q: "biryani kaise banate hai?", lang: hinglish}
+  - {q: "kal bangalore mein baarish hogi kya?", lang: hinglish}

@@ -37,13 +37,25 @@ log = get_logger(__name__)
 
 _DEVANAGARI = re.compile(r"[ऀ-ॿ]")
 
-# Distinctive romanized-Hindi word markers that signal Hinglish when the script is Latin.
-# Matched on word boundaries only (avoids e.g. "do" inside "does").
+# Distinctive romanized-Hindi words that signal Hinglish when the script is Latin. Words that
+# are also common English (to, the, me, main, par, ya, so, do, is) are deliberately excluded.
 _HINGLISH_MARKERS = {
-    "kya", "mera", "meri", "mere", "karo", "kardo", "krdo", "hai", "kaise",
-    "nahi", "nahin", "batao", "chahiye", "kab", "kitna", "kitni", "nambar",
-    "mujhe", "karna", "karni", "kaisa", "kaisi",
+    "kya", "kyaa", "mera", "meri", "mere", "mujhe", "mujhko", "hamara", "humara", "hamari",
+    "aap", "aapka", "aapki", "aapke", "apna", "apni", "hum", "karo", "kardo", "krdo", "kar",
+    "karna", "karni", "karke", "karein", "karen", "kijiye", "dijiye", "hai", "hain", "hoon",
+    "hu", "ho", "tha", "thi", "raha", "rahi", "rahe", "gaya", "gayi", "gaye", "hua", "hui",
+    "hue", "hoga", "hogi", "diya", "liya", "kaise", "kaisa", "kaisi", "kyun", "kyu", "kyon",
+    "kab", "kahan", "kaun", "kaunsa", "kitna", "kitni", "kitne", "nahi", "nahin", "nhi",
+    "batao", "bataiye", "bata", "chahiye", "chahta", "chahti", "sakta", "sakti", "sakte",
+    "wala", "wali", "wale", "ka", "ki", "ke", "se", "mein", "mai", "bhi", "aur", "toh",
+    "abhi", "kuch", "koi", "yeh", "ye", "woh", "wo", "iska", "uska", "liye", "samajh",
+    "samjha", "aaya", "pata", "nambar", "badal", "badlo", "badalna", "milega", "milta",
+    "paisa", "paise", "haan", "ji", "dikhao", "bhejo", "karwa", "karwao", "dedo", "dena",
+    "lena", "bhool", "jao", "jaao", "saare", "saara", "sab", "chalo", "accha", "acha",
+    "theek", "thik", "matlab", "wapas", "aaj", "kal",
 }
+# Scripts of Indian languages we don't serve yet (Bengali … Malayalam) and Urdu/Arabic.
+_OTHER_SCRIPT = re.compile(r"[\u0980-\u0dff\u0600-\u06ff]")
 
 # Claim-status is an action only when a claim ID is present or the phrasing is explicit —
 # a bare "claim" (e.g. "how do I file a claim?") is an information question, not an action.
@@ -77,12 +89,20 @@ _INFORMATION = {
     "what does", "premium", "exclusion", "claim process", "how do i",
     "how to", "eligible", "kya cover", "policy", "faq", "deductible",
     "waiting period", "कवर", "पॉलिसी", "प्रीमियम", "प्रतीक्षा", "अवधि", "अपवर्जन",
-    "loan", "emi", "foreclosure", "tenure", "interest rate", "grace period",
+    "loan", "emi", "emis", "foreclosure", "tenure", "interest rate", "grace period",
     "reinstate", "nominee", "statement", "miss",
     # Explanation / adjudication questions about the customer's own claim — the differentiator.
     "why was", "why is", "why did", "rejected", "reject", "reduced", "partial",
     "partially", "deduction", "co-pay", "copay", "clause", "rider", "lapse", "lapsed",
     "क्यों", "अस्वीकृत", "खंड", "लैप्स", "kyun", "kyu", "reject kyun",
+}
+# "I didn't understand" / "explain again": a follow-up on the previous answer. Information —
+# retrieval anchors on the previous substantive question (graph/build._retrieval_query).
+_META_FOLLOWUP = {
+    "samajh nahi", "samajh nahin", "samajh nhi", "samjha nahi", "samjhao", "samjhaiye",
+    "phir se batao", "dobara batao", "didn't understand", "did not understand",
+    "don't understand", "explain again", "explain that", "what do you mean", "matlab kya",
+    "समझ नहीं", "समझाइए", "समझाओ", "फिर से बताइए", "दोबारा बताइए", "मतलब क्या",
 }
 _COMPLAINT = {"not working", "worst", "angry", "horrible", "complaint", "शिकायत", "bekar"}
 _GREETING = {"hi", "hello", "hey", "namaste", "नमस्ते", "good morning", "good evening"}
@@ -99,9 +119,11 @@ _CAPABILITY = {
 # History-seeking phrasing: authorizes the Interaction-history domain on demand (long-term
 # memory). Never eager — only when the customer references their past interactions.
 _HISTORY = {
-    "last time", "previously", "previous", "earlier", "before", "my history",
-    "past complaint", "past ticket", "last call", "spoke earlier", "told you",
-    "pichli baar", "pehle", "pichhle", "last conversation", "इतिहास", "पिछली बार", "पहले",
+    "last time", "the other day", "my history", "my past", "past complaint", "past complaints",
+    "past ticket", "previous complaint", "previous ticket", "previous conversation",
+    "last conversation", "last call", "i called before", "i called earlier", "spoke earlier",
+    "i told you", "told you before", "as i said", "pichli baar", "pichhli baar", "pichle baar",
+    "pehle bhi", "pehle bataya", "pehle baat", "इतिहास", "पिछली बार", "पहले भी", "पहले बताया",
 }
 
 # --- Entity extractors ---
@@ -128,12 +150,22 @@ _UPDATE_RE = re.compile(
 _WORD_RE = re.compile(r"[a-z]+")
 
 
+def hinglish_hits(text: str) -> int:
+    return sum(1 for w in _WORD_RE.findall(text.lower()) if w in _HINGLISH_MARKERS)
+
+
 def detect_language(text: str) -> Language:
+    letters = [c for c in text if c.isalpha()]
+    other = len(_OTHER_SCRIPT.findall(text))
+    if letters and other / len(letters) >= 0.3:
+        return Language.UNSUPPORTED  # Tamil, Bengali, Urdu, … — say so rather than guess
     if _DEVANAGARI.search(text):
         # Mixed Devanagari + Latin words -> still treat as Hindi-script (hi).
         return Language.HI
-    words = set(_WORD_RE.findall(text.lower()))
-    if words & _HINGLISH_MARKERS:
+    # Scored, not any-hit: two distinctive Hindi words, or a meaningful share of a short one.
+    words = _WORD_RE.findall(text.lower())
+    hits = hinglish_hits(text)
+    if hits >= 2 or (words and hits / len(words) >= 0.15):
         return Language.HINGLISH
     return Language.EN
 
@@ -149,13 +181,47 @@ def extract_entities(text: str) -> dict:
     if m := _EMAIL_RE.search(text):
         entities["email"] = m.group(1)
     # On-demand long-term memory signal: the customer is referencing past interactions.
-    if _hits(text.lower(), _HISTORY):
+    if _hits(text, _HISTORY):
         entities["wants_history"] = True
     return entities
 
 
+_WORDCH = r"\w\u0900-\u097f"
+_LEX_CACHE: dict[frozenset[str], re.Pattern[str]] = {}
+
+
+def _term_pattern(term: str) -> str:
+    """Whole-word match with a leading boundary ('cover' never matches inside 'discover', 'hi'
+    never inside 'this'). A final word of 4+ letters may inflect ('cover' -> 'covered',
+    'badal' -> 'badalna'); short words must end on a boundary ('do i' is not 'do it')."""
+    last = term.split()[-1] if term.split() else term
+    tail = f"[{_WORDCH}]*" if len(last) >= 4 or _DEVANAGARI.search(last) else f"(?![{_WORDCH}])"
+    return f"(?<![{_WORDCH}]){re.escape(term)}{tail}"
+
+
 def _hits(text: str, lexicon: set[str]) -> bool:
-    return any(kw in text for kw in lexicon)
+    key = frozenset(lexicon)
+    rx = _LEX_CACHE.get(key)
+    if rx is None:
+        alts = sorted({t.lower() for t in lexicon}, key=len, reverse=True)
+        rx = _LEX_CACHE[key] = re.compile("|".join(_term_pattern(t) for t in alts), re.IGNORECASE)
+    return bool(rx.search(text))
+
+
+_SENTENCE_SPLIT = re.compile(r"[.?!।\n]+|\balso\b|\bsaath hi\b|साथ ही", re.IGNORECASE)
+_LOOKUP = ("detail", "विवरण", "vivaran", "dikhao", "show", "batao", "दिखाओ", "chahiye")
+
+
+def _is_capability(text: str) -> bool:
+    return _hits(text.lower(), _CAPABILITY)
+
+
+def _write_text(text: str) -> str:
+    """The sentences that are NOT capability questions. "How do I pay? Also update my email
+    to a@b.com" asks about paying but directly requests the update — only the question part is
+    suppressed, so the write in the other sentence still counts."""
+    parts = [p for p in _SENTENCE_SPLIT.split(text) if p and p.strip()]
+    return " . ".join(p for p in parts if not _is_capability(p))
 
 
 def classify_intents(text: str) -> list[Intent]:
@@ -163,17 +229,18 @@ def classify_intents(text: str) -> list[Intent]:
     intents: list[Intent] = []
 
     # A capability/permission question ("can I file a claim?", "kya main claim file kar sakti
-    # hu?") ASKS ABOUT a write — it is information, not a request to perform it. Suppress the
-    # write action so it never triggers step-up; answer the "how/whether" from retrieval.
-    capability = _hits(lower, {k.lower() for k in _CAPABILITY})
+    # hu?") ASKS ABOUT a write — it is information, not a request to perform it. Writes are
+    # detected only in the sentences that aren't such questions, so they never trigger step-up
+    # from a question; the "how/whether" is answered from retrieval.
+    capability = _is_capability(text)
+    wtext = _write_text(text) if capability else text
+    wlower = wtext.lower()
 
-    if not capability and (
-        _UPDATE_RE.search(text) or _hits(lower, {k.lower() for k in _UPDATE_CONTACT})
-    ):
+    if _UPDATE_RE.search(wtext) or _hits(wlower, _UPDATE_CONTACT):
         intents.append(Intent(type=IntentType.ACTION, action="update_contact", confidence=0.9))
-    if not capability and _hits(lower, {k.lower() for k in _RAISE_TICKET}):
+    if _hits(wlower, _RAISE_TICKET):
         intents.append(Intent(type=IntentType.ACTION, action="raise_ticket", confidence=0.85))
-    if not capability and _hits(lower, {k.lower() for k in _FILE_CLAIM}):
+    if _hits(wlower, _FILE_CLAIM):
         intents.append(Intent(type=IntentType.ACTION, action="file_claim", confidence=0.9))
     has_claim_id = bool(_CLAIM_RE.search(text))
     claim_phrase = _hits(lower, _CLAIM_STATUS_PHRASES) or (
@@ -191,21 +258,20 @@ def classify_intents(text: str) -> list[Intent]:
     # ownership check then blocks a cross-customer policy id). A pure policy lookup suppresses
     # the broad INFORMATION match so it routes cleanly to the action path, not mixed.
     has_policy_id = bool(_POLICY_RE.search(text))
-    _LOOKUP = ("detail", "विवरण", "vivaran", "dikhao", "show", "batao", "दिखाओ", "chahiye")
     policy_lookup = has_policy_id and any(w in lower or w in text for w in _LOOKUP)
     if policy_lookup:
         intents.append(
             Intent(type=IntentType.ACTION, action="get_policy_details", confidence=0.85)
 )
-    has_information = _hits(lower, {k.lower() for k in _INFORMATION})
+    has_information = _hits(lower, _INFORMATION) or _hits(lower, _META_FOLLOWUP)
     # A capability question is informational even if its topic word isn't in the FAQ lexicon
     # (e.g. "claim" alone) — so route the suppressed write to INFORMATION.
     has_info_intent = any(i.type == IntentType.INFORMATION for i in intents)
     if not policy_lookup and (has_information or capability) and not has_info_intent:
         intents.append(Intent(type=IntentType.INFORMATION, confidence=0.7))
-    if not intents and _hits(lower, {k.lower() for k in _GREETING}):
+    if not intents and _hits(lower, _GREETING):
         intents.append(Intent(type=IntentType.SMALL_TALK, confidence=0.7))
-    if _hits(lower, {k.lower() for k in _COMPLAINT}):
+    if _hits(lower, _COMPLAINT):
         intents.append(Intent(type=IntentType.COMPLAINT, confidence=0.6))
 
     if not intents:
@@ -261,15 +327,58 @@ def _all_unknown(intents: list[Intent]) -> bool:
     return all(i.type == IntentType.UNKNOWN for i in intents) if intents else True
 
 
-def _no_writes(intents: list[Intent]) -> list[Intent]:
-    """Downgrade state-changing actions to information (capability-question safety guard)."""
+def _no_writes(intents: list[Intent], keep: set[str] | None = None) -> list[Intent]:
+    """Downgrade state-changing actions to information (capability-question safety guard),
+    except writes the customer requested directly in a non-question sentence (`keep`)."""
+    keep = keep or set()
     out: list[Intent] = []
     for i in intents:
-        if i.type == IntentType.ACTION and i.action in _STEP_UP_ACTIONS_RT:
-            out.append(Intent(type=IntentType.INFORMATION, confidence=i.confidence))
+        if i.type == IntentType.ACTION and i.action in _STEP_UP_ACTIONS_RT and i.action not in keep:
+            if not any(o.type == IntentType.INFORMATION for o in out):
+                out.append(Intent(type=IntentType.INFORMATION, confidence=i.confidence))
         else:
             out.append(i)
+    if keep and not any(o.type == IntentType.INFORMATION for o in out):
+        out.append(Intent(type=IntentType.INFORMATION, confidence=0.7))  # the question part
     return out or [Intent(type=IntentType.INFORMATION, confidence=0.7)]
+
+
+_READ_ACTIONS = {"get_claim_status", "get_policy_details"}
+
+
+def _reconcile(result: IntentResult, message: str) -> IntentResult:
+    """Deterministic floor under the LLM's reading, for the two ways it was seen to fail live:
+
+    - It dropped an explicit, id-bearing read ("क्लेम CLM2001 का स्टेटस?" -> no
+      get_claim_status), and retrieval then answered about a different claim. A read the
+      deterministic classifier is sure of is restored (reads are still ownership-gated).
+    - It turned a coverage question ("मेरी पॉलिसी में क्या कवर है?") into a policy lookup with no
+      id, which then asked "Which policy ID?". Without an id or lookup phrasing, that is an
+      information question.
+    """
+    det = classify_intents(message)
+    lower = message.lower()
+    have = {i.action for i in result.intents if i.action}
+    intents = list(result.intents)
+    restored = [i for i in det if i.action in _READ_ACTIONS and i.action not in have]
+    if restored:
+        intents += restored
+        # The LLM had filed the lookup as a general question: keep an INFORMATION intent only
+        # if the message also asks something the deterministic reader sees as a question.
+        if not any(i.type == IntentType.INFORMATION for i in det):
+            intents = [i for i in intents if i.type != IntentType.INFORMATION]
+    explicit_lookup = bool(_POLICY_RE.search(message)) or any(
+        w in lower or w in message for w in _LOOKUP
+    )
+    if not explicit_lookup:
+        converted = [i for i in intents if i.action == "get_policy_details"]
+        intents = [i for i in intents if i.action != "get_policy_details"]
+        if converted and not any(i.type == IntentType.INFORMATION for i in intents):
+            intents.append(Intent(type=IntentType.INFORMATION, confidence=converted[0].confidence))
+    if any(i.type != IntentType.UNKNOWN for i in intents):
+        intents = [i for i in intents if i.type != IntentType.UNKNOWN]
+    result.intents = intents or [Intent(type=IntentType.UNKNOWN, confidence=0.3)]
+    return result
 
 
 # Write actions (mirror authz step-up tier) — used by the capability-question guard.
@@ -385,10 +494,18 @@ class TriageAgent:
         except BaseException:
             lang_task.cancel()
             raise
+        if self._llm.has_real_provider:
+            result = _reconcile(result, message)
         # Deterministic safety guard: a capability/permission QUESTION must never become a write,
         # whatever the LLM said. Writes fire only on a direct request — keeps step-up honest.
-        if _hits(message.lower(), {k.lower() for k in _CAPABILITY}):
-            result.intents = _no_writes(result.intents)
+        # Per sentence: a write requested directly in another sentence of the message survives.
+        if _is_capability(message):
+            direct = {
+                i.action
+                for i in classify_intents(_write_text(message))
+                if i.action in _STEP_UP_ACTIONS_RT
+            }
+            result.intents = _no_writes(result.intents, keep=direct)
         # Entities come from precise regex (IDs/mobile/email), authoritative over any LLM guess.
         result.entities = {**result.entities, **extract_entities(message)}
 

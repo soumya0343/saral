@@ -7,7 +7,6 @@ output is requested via JSON mode + schema-in-prompt, then parsed and validated.
 from __future__ import annotations
 
 import json
-import re
 from typing import TypeVar
 
 import httpx
@@ -127,11 +126,8 @@ class SarvamProvider:
             raise LLMError(f"sarvam structured parse failed: {e}") from e
 
 
-_DEVANAGARI = re.compile(r"[ऀ-ॿ]")
-
-
 def _map_lid(data: dict, text: str) -> Language:
-    """Map a Sarvam text-lid response to our three-label enum.
+    """Map a Sarvam text-lid response to our language enum.
 
     text-lid returns e.g. {"language_code": "hi-IN", "script_code": "Latin"}. Hinglish is the
     (hi, Latin) combination — Hindi words typed in Roman script. Languages outside our enum
@@ -145,9 +141,11 @@ def _map_lid(data: dict, text: str) -> Language:
         return Language.EN
     if code.startswith("hi"):
         return Language.HINGLISH if is_latin else Language.HI
-    # Out-of-scope language: best-effort by script (no exception — Sarvam did answer).
-    if _DEVANAGARI.search(text):
-        return Language.HI
+    # Another Indian language (mr, ta, bn, …) in its own script — including Marathi / Nepali in
+    # Devanagari — is out of scope: say so rather than reply in the wrong language. Latin-script
+    # text Sarvam couldn't place as en/hi stays English (romanized guesses are unreliable).
+    if code and not is_latin:
+        return Language.UNSUPPORTED
     return Language.EN
 
 

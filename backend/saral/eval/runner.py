@@ -154,9 +154,17 @@ async def run_eval(
         )
     scenarios = load_scenarios()
     if only:
-        scenarios = [s for s in scenarios if s.id in set(only)]
+        # Accept "a b c" and "a,b,c" alike.
+        wanted = {x.strip() for item in only for x in item.split(",") if x.strip()}
+        unknown = wanted - {s.id for s in scenarios}
+        if unknown:
+            raise EvalConfigError(f"unknown scenario ids: {sorted(unknown)}")
+        scenarios = [s for s in scenarios if s.id in wanted]
     if limit:
         scenarios = scenarios[:limit]
+    if not scenarios:
+        # An empty run would report 100% on every metric and become the "prior" report.
+        raise EvalConfigError("no scenarios selected")
 
     judge: RubricJudge | LLMJudge = live_judge() if tier == "live" else RubricJudge()
     done: dict[str, ScenarioResult] = {}

@@ -12,6 +12,9 @@ class Language(StrEnum):
     EN = "en"
     HI = "hi"
     HINGLISH = "hinglish"
+    # A language we don't serve yet (Tamil, Bengali, Marathi, Urdu, …): the agent says so in
+    # English + Hindi instead of answering in a language the customer didn't write in.
+    UNSUPPORTED = "unsupported"
 
 
 class AuthLevel(StrEnum):
@@ -103,10 +106,14 @@ class Passage(BaseModel):
     score: float = 0.0
     scope: Literal["generic", "customer"] = "generic"  # generic corpus vs per-customer doc
     domain: str | None = None  # data domain (per-customer only)
+    section: str = ""  # heading path the chunk sits under ("Schedule › 6. Lapse")
+    clause_id: str | None = None  # the clause this chunk IS ("6.2"), when it is one
+    language: str = "en"  # "en" | "hi" — the document's language
 
     @property
     def citation(self) -> str:
-        return f"{self.doc_id}#{self.chunk_id}"
+        # Clause-level anchor when the chunk is a numbered clause (doc#6.2), else its position.
+        return f"{self.doc_id}#{self.clause_id or self.chunk_id}"
 
     @property
     def is_personal(self) -> bool:

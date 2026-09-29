@@ -93,6 +93,11 @@ class Settings(BaseSettings):
     # Below this top-passage score an information answer is ungrounded -> escalate.
     # Calibrated for e5 cosine/RRF; hashing uses a different scale (kept 0.0 in CI).
     retrieval_score_floor: float = 0.0
+    # Optional local prompt-injection classifier layered on the deterministic rules (off when
+    # empty). Free + multilingual: meta-llama/Llama-Prompt-Guard-2-86M (gated on Hugging Face:
+    # accept the licence, set HF_TOKEN). Anything not labelled benign above the threshold blocks.
+    injection_classifier_model: str = ""
+    injection_classifier_threshold: float = 0.8
 
     # --- Identity & Auth ---
     # Mock IdP signing secret (HS256). Dev default is insecure on purpose; set in prod.

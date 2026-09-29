@@ -84,7 +84,7 @@ idempotent write fires.
 - [`compliance/`](backend/saral/compliance/) — `injection`, `authz`, `gate`, `pii` (regex/Presidio), `audit`, `erasure`
 - [`graph/`](backend/saral/graph/) — supervisor graph, run state machine, checkpointing, score-floor + grounding gates
 - [`llm/`](backend/saral/llm/) — per-role provider routing (Gemini · Groq · Cerebras · Sarvam · Anthropic · stub)
-- [`rag/`](backend/saral/rag/) — generic corpus + per-customer multilingual-e5 index over [`data/customers/`](data/customers/)
+- [`rag/`](backend/saral/rag/) — heading/clause-aware chunking (clause-level citations like `policy_schedule.md#4.1`), a generic EN+HI corpus (53 docs, 15 with Hindi parallels), and a per-customer multilingual-e5 index over [`data/customers/`](data/customers/): authored hero documents plus a schedule / claim note generated from the rows for every other policy and claim, anchored to the claim or policy the customer named
 - [`eval/`](backend/saral/eval/) — scenarios, metrics, per-language LLM judge + Cohen's κ gating, runner
 - [`jobs/`](backend/saral/jobs/) — orphan reaper + data-retention purge
 
@@ -179,7 +179,14 @@ make eval-baseline   # after a genuine improvement: write the new baseline (comm
 make eval-live       # live: the real free models in .env, judged by a pinned LLM judge
 make eval-live ARGS="--limit 20"   # a sample; ARGS="--resume" continues after a quota stop
 make eval-labels     # add the latest live replies to data/eval_labels/ for human labelling
+make eval-heldout    # injection guard on blind held-out sets (never gated, never tuned on)
+make calibrate-floor # retrieval score-floor sweep for the active embedder (needs e5 locally)
 ```
+
+The injection guard is also measured on sets in [`data/scenarios/heldout/`](data/scenarios/heldout/)
+written by someone who never saw the detector. They are deliberately outside the suite and the
+gate: once a set is used to change the detector its number only goes up, so the report says which
+sets have been used for tuning and keeps their first blind reading.
 
 Metrics look at the **reply**, not just the plumbing: reply in the customer's language/script,
 required facts present + expected source cited, faithfulness (no number/id the sources don't

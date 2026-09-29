@@ -48,9 +48,10 @@ def test_entity_extraction():
         ({"language_code": "hi-IN", "script_code": "Latn"}, "mera claim", Language.HINGLISH),
         ({"language_code": "hi-IN", "script_code": "Deva"}, "मेरा क्लेम", Language.HI),
         ({"language_code": "en-IN", "script_code": "Latn"}, "hello", Language.EN),
-        # Out-of-scope language falls back to a script heuristic (corpus is en/hi/hinglish only).
-        ({"language_code": "ta-IN", "script_code": "Taml"}, "வணக்கம்", Language.EN),
-        ({"language_code": "ta-IN", "script_code": "Deva"}, "मराठी", Language.HI),
+        # Another Indian language is out of scope: flagged, never answered as en/hi.
+        ({"language_code": "ta-IN", "script_code": "Taml"}, "வணக்கம்", Language.UNSUPPORTED),
+        ({"language_code": "mr-IN", "script_code": "Deva"}, "मराठी", Language.UNSUPPORTED),
+        ({"language_code": "ta-IN", "script_code": "Latn"}, "vanakkam", Language.EN),
         ({}, "no fields", Language.EN),
     ],
 )

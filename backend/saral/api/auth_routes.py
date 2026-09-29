@@ -68,6 +68,8 @@ async def login_verify(body: LoginVerify) -> CustomerSession:
         returning=True,
         policy_id=ctx.get("policy_id"),
         claim_id=ctx.get("claim_id"),
+        policy_ids=ctx.get("policy_ids", []),
+        claim_ids=ctx.get("claim_ids", []),
         tokens=await asyncio.to_thread(issue_tokens, user_id),
     )
 

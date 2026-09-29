@@ -26,7 +26,7 @@ def check_authorization(user_id: str, action: str, entities: dict) -> tuple[bool
     if action == "get_policy_details":
         policy_id = entities.get("policy_id")
         if not policy_id:
-            return True, "no policy referenced yet"  # arg re-ask handled by action agent
+            return True, "no policy named: reads only the customer's own policies"
         try:
             policy = mb.get_policy_details(policy_id)
         except mb.ToolError:
@@ -38,7 +38,7 @@ def check_authorization(user_id: str, action: str, entities: dict) -> tuple[bool
     if action == "get_claim_status":
         claim_id = entities.get("claim_id")
         if not claim_id:
-            return True, "no claim referenced yet"
+            return True, "no claim named: reads only the customer's own claims"
         try:
             claim = mb.get_claim_status(claim_id)
             policy = mb.get_policy_details(claim.policy_id)

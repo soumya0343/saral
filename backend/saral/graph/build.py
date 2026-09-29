@@ -24,18 +24,20 @@ from langgraph.graph import END, START, StateGraph
 from saral.actions.confirm import build_pending_write, is_stale, parse_confirmation
 from saral.agents.action import ActionAgent
 from saral.agents.rag import RagAgent
-from saral.agents.synthesis import SynthesisAgent, SynthesisContext
+from saral.agents.synthesis import COMPLAINT_REPLIES, SynthesisAgent, SynthesisContext
 from saral.agents.triage import TriageAgent
 from saral.auth.identity import identity_gate
 from saral.auth.stepup import request_step_up
 from saral.authz import allowed_domains as domains_for
 from saral.authz import requires_step_up
 from saral.compliance.gate import ComplianceGate
+from saral.compliance.injection import PASSAGE_FAMILIES, detect_injection
 from saral.compliance.pii import redact_pii
 from saral.config import get_settings
 from saral.graph.state import RunState
 from saral.llm import usage as llm_usage
 from saral.logging import get_logger
+from saral.rag.customer_index import mentioned_entity_ids
 from saral.schemas import (
     EscalationRecord,
     IntentType,
@@ -73,13 +75,13 @@ _CLARIFY_CONTACT = {
 # Field is known but the new value is missing — ask specifically for the value.
 _CLARIFY_MOBILE = {
     Language.EN: "Sure — what is the new mobile number you'd like to set?",
-    Language.HI: "ज़रूर — आप कौन-सा नया मोबाइल नंबर सेट करना चाहती हैं?",
-    Language.HINGLISH: "Zaroor — aap naya mobile number kya set karna chahti hain?",
+    Language.HI: "ज़रूर — कृपया नया मोबाइल नंबर बताएं।",
+    Language.HINGLISH: "Zaroor — kripya naya mobile number bataiye.",
 }
 _CLARIFY_EMAIL = {
     Language.EN: "Sure — what is the new email address you'd like to set?",
-    Language.HI: "ज़रूर — आप कौन-सा नया ईमेल पता सेट करना चाहती हैं?",
-    Language.HINGLISH: "Zaroor — aap naya email address kya set karna chahti hain?",
+    Language.HI: "ज़रूर — कृपया नया ईमेल पता बताएं।",
+    Language.HINGLISH: "Zaroor — kripya naya email address bataiye.",
 }
 _EMAIL_WORDS = ("email", "e-mail", "mail", "ईमेल", "मेल")
 _MOBILE_WORDS = ("mobile", "number", "phone", "नंबर", "नम्बर", "मोबाइल", "फोन")
@@ -99,13 +101,13 @@ _INVALID_EMAIL = {
 # else). Shown on the 2nd consecutive clarify so a confused customer isn't stuck on terse text.
 _CLARIFY_MOBILE_HELP = {
     Language.EN: "I still need the new mobile number to make this change. Please send just the 10 digits (starting 6–9), e.g. 9876543210 — or tell me if you'd like to do something else.",  # noqa: E501
-    Language.HI: "इस बदलाव के लिए मुझे नया मोबाइल नंबर चाहिए। कृपया केवल 10 अंक (6–9 से शुरू) भेजें, जैसे 9876543210 — या बताएं कि आप कुछ और करना चाहती हैं।",  # noqa: E501
-    Language.HINGLISH: "Is change ke liye mujhe naya mobile number chahiye. Kripya sirf 10 digit (6–9 se shuru) bhejein, jaise 9876543210 — ya bataiye agar aap kuch aur karna chahti hain.",  # noqa: E501
+    Language.HI: "इस बदलाव के लिए मुझे नया मोबाइल नंबर चाहिए। कृपया केवल 10 अंक (6–9 से शुरू) भेजें, जैसे 9876543210 — या कुछ और करना हो तो बताएं।",  # noqa: E501
+    Language.HINGLISH: "Is change ke liye mujhe naya mobile number chahiye. Kripya sirf 10 digit (6–9 se shuru) bhejein, jaise 9876543210 — ya kuch aur karna ho to bataiye.",  # noqa: E501
 }
 _CLARIFY_EMAIL_HELP = {
     Language.EN: "I still need the new email address to make this change. Please send it like name@example.com — or tell me if you'd like to do something else.",  # noqa: E501
-    Language.HI: "इस बदलाव के लिए मुझे नया ईमेल पता चाहिए। कृपया इसे name@example.com जैसे भेजें — या बताएं कि आप कुछ और करना चाहती हैं।",  # noqa: E501
-    Language.HINGLISH: "Is change ke liye mujhe naya email address chahiye. Kripya ise name@example.com jaise bhejein — ya bataiye agar aap kuch aur karna chahti hain.",  # noqa: E501
+    Language.HI: "इस बदलाव के लिए मुझे नया ईमेल पता चाहिए। कृपया इसे name@example.com जैसे भेजें — या कुछ और करना हो तो बताएं।",  # noqa: E501
+    Language.HINGLISH: "Is change ke liye mujhe naya email address chahiye. Kripya ise name@example.com jaise bhejein — ya kuch aur karna ho to bataiye.",  # noqa: E501
 }
 # After repeated failures, stop looping — hand to a human.
 _CLARIFY_GIVEUP = {
@@ -355,6 +357,9 @@ async def identity_node(state: RunState) -> dict:
     # Injection already blocks the run — don't mint challenges for a manipulation attempt.
     if _injection_blocked(state):
         return up
+    # A language we don't serve: say so (bilingual), read nothing, start no write.
+    if state.language == Language.UNSUPPORTED:
+        return {**up, "allowed_domains": [], "route": "respond"}
 
     writes = [
         i
@@ -594,11 +599,26 @@ def _retrieval_query(state: RunState) -> str:
 async def rag_node(state: RunState) -> dict:
     # Per-customer scoped retrieval: pass verified user_id + allowed domains.
     try:
+        query = _retrieval_query(state)
         passages = await _rag.run(
-            _retrieval_query(state),
+            query,
             user_id=state.user_id,
             allowed_domains=state.allowed_domains,
-)
+            # Only ids the customer actually named (this message or the resolved query) —
+            # never the account's default ids — narrow personal docs to that claim/policy.
+            mentioned_ids=mentioned_entity_ids(state.raw_message, query),
+            language=str(state.language) if state.language else None,
+        )
+        # Indirect injection: a retrieved passage carrying instructions aimed at the model
+        # (poisoned doc / correspondence) is dropped before synthesis ever sees it.
+        clean = [p for p in passages if not detect_injection(p.text, PASSAGE_FAMILIES)[0]]
+        if len(clean) < len(passages):
+            log.warning(
+                "rag.passage_injection_dropped",
+                run_id=state.run_id,
+                dropped=[p.citation for p in passages if p not in clean],
+            )
+        passages = clean
         # Score-floor groundedness gate: if the best passage is below the
         # floor, the answer would be ungrounded — escalate rather than invent a clause.
         floor = get_settings().retrieval_score_floor
@@ -664,6 +684,10 @@ async def synthesis_node(state: RunState) -> dict:
             **drop_write,
         }
 
+    kinds = {i.type for i in state.intents}
+    complaint = IntentType.COMPLAINT in kinds and not (
+        kinds & {IntentType.ACTION, IntentType.INFORMATION}
+    )
     ctx = SynthesisContext(
         language=state.language or Language.EN,
         message=state.raw_message,
@@ -673,6 +697,10 @@ async def synthesis_node(state: RunState) -> dict:
         degraded=state.degraded_agents,
         history=state.history,
         write_pending=bool(state.suspend_prompt),
+        complaint=complaint,
+        # We already offered a ticket in this conversation and they're still unhappy.
+        repeat_complaint=complaint
+        and any(h.role == "assistant" and h.content in COMPLAINT_REPLIES for h in state.history),
     )
     tokens_before = llm_usage.current()
     response = await _synth.run(ctx)
@@ -711,7 +739,10 @@ async def synthesis_node(state: RunState) -> dict:
             tenant_id=state.tenant_id,
             detected_intent=primary,
             attempted_actions=[a.tool for a in state.actions],
-            blocking_reason="compliance_block_or_low_confidence",
+            blocking_reason=(
+                "repeated_complaint" if ctx.repeat_complaint
+                else "compliance_block_or_low_confidence"
+            ),
             transcript_ref=state.conversation_id,
             pending_action=state.pending_write.tool if state.pending_write else None,
             sla_target="4h",

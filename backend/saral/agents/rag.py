@@ -24,6 +24,8 @@ class RagAgent:
         top_k: int | None = None,
         user_id: str | None = None,
         allowed_domains: list[str] | None = None,
+        mentioned_ids: set[str] | None = None,
+        language: str | None = None,
     ) -> list[Passage]:
         # Embedding + BM25 are CPU-bound (and the first call may build the indexes): run off
         # the event loop so concurrent runs, heartbeats and an in-process API aren't frozen.
@@ -33,4 +35,6 @@ class RagAgent:
             top_k=top_k,
             user_id=user_id,
             allowed_domains=allowed_domains,
+            mentioned_ids=mentioned_ids,
+            language=language,
         )

@@ -25,6 +25,16 @@ log = get_logger(__name__)
 _STATE_CHANGING = {"update_contact", "raise_ticket", "file_claim"}
 
 
+class _Listed:
+    """A read over all of the customer's own rows, shaped like a tool result."""
+
+    def __init__(self, key: str, rows: list) -> None:
+        self.key, self.rows = key, rows
+
+    def model_dump(self) -> dict:
+        return {self.key: [r.model_dump() for r in self.rows]}
+
+
 class ActionAgent:
     name = "action"
 
@@ -47,7 +57,7 @@ class ActionAgent:
                 if pending_write is not None and pending_write.tool == intent.action:
                     records.append(await self._execute_pending(pending_write, user_id, message))
                 continue
-            records.append(await self._dispatch(intent.action, entities))
+            records.append(await self._dispatch(intent.action, entities, user_id))
         return records
 
     async def _execute_pending(
@@ -72,34 +82,34 @@ class ActionAgent:
             return ActionRecord(tool=pw.tool, error=f"unknown write '{pw.tool}'")
         return await self._invoke(pw.tool, args, idem, call)
 
-    async def _dispatch(self, action: str, entities: dict) -> ActionRecord:
+    async def _dispatch(self, action: str, entities: dict, user_id: str) -> ActionRecord:
         # Reads only: state-changing actions never reach here — they execute via
         # _execute_pending() under the conversation-anchored idempotency key (run() guard
         # above). Reads need no idempotency key.
         idem = None
 
-        # Resolve arguments / required-arg checks.
+        # Resolve arguments. With no id named (and none unambiguous on the account), a read
+        # answers for ALL of the customer's own claims / policies — "what's my claim status?"
+        # with two claims lists both, instead of silently picking the first or pretending
+        # there are none.
         call: Callable[[], Any]
         if action == "get_claim_status":
             claim_id = entities.get("claim_id")
-            if not claim_id:
-                return ActionRecord(
-                    tool=action,
-                    needs_clarification=(
-                        "You don't have any claims on file yet. Would you like to file one?"
-),
-)
-            args = {"claim_id": claim_id}
-            call = lambda: mb.get_claim_status(claim_id)  # noqa: E731
+            if claim_id:
+                args: dict = {"claim_id": claim_id}
+                call = lambda: mb.get_claim_status(claim_id)  # noqa: E731
+            else:
+                args = {"user_id": user_id}
+                call = lambda: _Listed("claims", mb.list_claims(user_id))  # noqa: E731
 
         elif action == "get_policy_details":
             policy_id = entities.get("policy_id")
-            if not policy_id:
-                return ActionRecord(
-                    tool=action, needs_clarification="Which policy ID should I look up?"
-)
-            args = {"policy_id": policy_id}
-            call = lambda: mb.get_policy_details(policy_id)  # noqa: E731
+            if policy_id:
+                args = {"policy_id": policy_id}
+                call = lambda: mb.get_policy_details(policy_id)  # noqa: E731
+            else:
+                args = {"user_id": user_id}
+                call = lambda: _Listed("policies", mb.list_policies(user_id))  # noqa: E731
 
         else:
             return ActionRecord(tool=action, error=f"unknown action '{action}'")

@@ -52,8 +52,10 @@ class CustomerSession(BaseModel):
     user_id: str
     name: str
     returning: bool
-    policy_id: str | None = None
-    claim_id: str | None = None
+    policy_id: str | None = None  # set only when the customer has exactly one
+    claim_id: str | None = None  # set only when the customer has exactly one
+    policy_ids: list[str] = []
+    claim_ids: list[str] = []
     tokens: TokenPair
 
 
@@ -109,6 +111,7 @@ async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
             returning=False,
             policy_id=created.get("policy_id"),
             claim_id=created.get("claim_id"),
+            policy_ids=[created["policy_id"]] if created.get("policy_id") else [],
             tokens=await asyncio.to_thread(issue_tokens, created["user_id"]),
         ),
     )
@@ -117,8 +120,10 @@ async def identify_customer(body: IdentifyCustomer) -> IdentifyOut:
 class CustomerProfile(BaseModel):
     user_id: str
     name: str
-    policy_id: str | None = None
-    claim_id: str | None = None
+    policy_id: str | None = None  # set only when the customer has exactly one
+    claim_id: str | None = None  # set only when the customer has exactly one
+    policy_ids: list[str] = []
+    claim_ids: list[str] = []
 
 
 @router.get("/me", response_model=CustomerProfile, tags=["customers"])
@@ -132,6 +137,8 @@ async def me(claims: SessionClaims = Depends(current_customer)) -> CustomerProfi
         name=profile["name"],
         policy_id=ctx.get("policy_id"),
         claim_id=ctx.get("claim_id"),
+        policy_ids=ctx.get("policy_ids", []),
+        claim_ids=ctx.get("claim_ids", []),
     )
 
 

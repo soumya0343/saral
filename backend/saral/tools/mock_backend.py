@@ -15,6 +15,8 @@ __all__ = [
     "ToolError",
     "get_claim_status",
     "get_policy_details",
+    "list_claims",
+    "list_policies",
     "update_contact",
     "raise_ticket",
     "file_claim",
@@ -32,6 +34,14 @@ def get_claim_status(claim_id: str) -> ClaimStatus:
 
 def get_policy_details(policy_id: str) -> Policy:
     return get_store().get_policy_details(policy_id)
+
+
+def list_claims(user_id: str) -> list[ClaimStatus]:
+    return get_store().list_claims(user_id)
+
+
+def list_policies(user_id: str) -> list[Policy]:
+    return get_store().list_policies(user_id)
 
 
 def update_contact(user_id: str, field: str, value: str, idempotency_key: str) -> ActionResult:

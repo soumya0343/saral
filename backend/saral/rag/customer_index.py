@@ -5,13 +5,17 @@ rider variants, claim adjudication notes, correspondence) from `data/customers/`
 `customer_id` + data `domain`. Retrieval applies a HARD pre-filter — `customer_id ∧
 allowed-domains` — BEFORE scoring (: never post-rank). A query
 naming another customer's policy id can never widen this; entities from the message body do
-not relax the filter.
+not relax the filter — they can only NARROW it to the claim/policy the customer asked about.
 
-No-op (returns []) when no manifest is present, so the generic corpus path is unaffected.
+Every other policy and claim the customer holds gets a generated document from its row
+(`customer_docs.py`), so non-hero and sandbox customers are grounded too.
 """
 
 from __future__ import annotations
 
+import hashlib
+import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 
@@ -20,39 +24,104 @@ from rank_bm25 import BM25Okapi
 
 from saral.config import get_settings
 from saral.logging import get_logger
+from saral.rag.chunking import chunk_markdown
+from saral.rag.customer_docs import generate_documents
 from saral.rag.embedder import cosine, get_embedder, tokenize
+from saral.rag.index import doc_language
 from saral.schemas import Passage
 
 log = get_logger(__name__)
 
 RRF_K = 60
+_ENTITY_RE = re.compile(r"\b(?:CLM|POL)\d+\b", re.IGNORECASE)
 
 
-def _chunk(text: str) -> list[str]:
-    blocks = [b.strip() for b in text.split("\n\n") if b.strip()]
-    out: list[str] = []
-    for b in blocks:
-        if b.startswith("#") and "\n" not in b:
-            continue
-        out.append(" ".join(b.split()))
-    return out
+def mentioned_entity_ids(*texts: str | None) -> set[str]:
+    """Claim / policy ids the customer named (uppercased)."""
+    return {m.upper() for t in texts if t for m in _ENTITY_RE.findall(t)}
 
 
 class _CustomerPassage:
-    __slots__ = ("passage", "customer_id", "vector", "tokens")
+    __slots__ = ("passage", "customer_id", "vector", "tokens", "about")
 
-    def __init__(self, passage: Passage, customer_id: str, vector: list[float], tokens: list[str]):
+    def __init__(
+        self,
+        passage: Passage,
+        customer_id: str,
+        vector: list[float],
+        tokens: list[str],
+        about: frozenset[str],
+    ):
         self.passage = passage
         self.customer_id = customer_id
         self.vector = vector
         self.tokens = tokens
+        self.about = about  # the claim / policy ids this document is about (may be empty)
+
+
+def _anchored(items: list[_CustomerPassage], mentioned: set[str]) -> list[_CustomerPassage]:
+    """Drop documents about a DIFFERENT claim/policy than the one the customer named.
+
+    "What is the status of CLM2001?" must never be answered from the CLM2010 adjudication note.
+    A document is dropped only when the customer named an id of the same kind (claim / policy)
+    and the document is about other ids of that kind; untagged docs (correspondence) and docs
+    of the other kind are unaffected.
+    """
+    if not mentioned:
+        return items
+    out: list[_CustomerPassage] = []
+    for it in items:
+        kinds = {a[:3] for a in it.about}
+        relevant = {m for m in mentioned if m[:3] in kinds}
+        if not relevant or it.about & relevant:
+            out.append(it)
+    return out
 
 
 class CustomerIndex:
+    """Authored hero documents (loaded once) + generated documents for every other policy and
+    claim the customer holds (rendered from the core-system rows on first use and re-rendered
+    when those rows change — e.g. a claim filed through the agent)."""
+
     def __init__(self, customers_dir: str | Path) -> None:
         self.embedder = get_embedder()
-        self.items: list[_CustomerPassage] = []
+        self.items: list[_CustomerPassage] = []  # authored
+        self._authored_about: dict[str, set[str]] = {}
+        self._generated: dict[str, tuple[str, list[_CustomerPassage]]] = {}
+        self._lock = threading.Lock()
         self._load(Path(customers_dir))
+
+    def _passages(
+        self,
+        text: str,
+        doc_id: str,
+        customer_id: str,
+        domain: str,
+        language: str,
+        about: frozenset[str],
+    ) -> list[_CustomerPassage]:
+        out = []
+        for i, chunk in enumerate(chunk_markdown(text)):
+            passage = Passage(
+                doc_id=doc_id,
+                chunk_id=i,
+                text=chunk.text,
+                scope="customer",
+                domain=domain,
+                section=chunk.section,
+                clause_id=chunk.clause_id,
+                language=language,
+            )
+            out.append(
+                _CustomerPassage(
+                    passage,
+                    customer_id,
+                    self.embedder.embed_document(chunk.indexed_text),
+                    tokenize(chunk.indexed_text),
+                    about,
+                )
+            )
+        return out
 
     def _load(self, root: Path) -> None:
         manifest = root / "manifest.yaml"
@@ -77,20 +146,47 @@ class CustomerIndex:
                     # doc could never be filtered, so it is not indexed at all.
                     log.warning("rag.customer_doc_no_domain", path=doc["path"], customer=cid)
                     continue
-                for i, chunk in enumerate(_chunk(text)):
-                    passage = Passage(
-                        doc_id=doc["path"].replace("data/customers/", ""),
-                        chunk_id=i,
-                        text=chunk,
-                        scope="customer",
-                        domain=domain,
+                about = frozenset(str(a).upper() for a in doc.get("about", []) or [])
+                self._authored_about.setdefault(cid, set()).update(about)
+                self.items.extend(
+                    self._passages(
+                        text,
+                        doc["path"].replace("data/customers/", ""),
+                        cid,
+                        domain,
+                        doc.get("language") or doc_language(text),
+                        about,
                     )
-                    self.items.append(
-                        _CustomerPassage(
-                            passage, cid, self.embedder.embed_document(chunk), tokenize(chunk)
-                        )
-                    )
+                )
         log.info("rag.customer_index.built", passages=len(self.items))
+
+    def _generated_for(self, user_id: str) -> list[_CustomerPassage]:
+        """Generated docs for this customer's un-authored policies/claims, rebuilt when the
+        rows change (fingerprint), so a newly filed claim is groundable on the next turn."""
+        from saral.tools import mock_backend as mb
+
+        try:
+            policies = mb.list_policies(user_id)
+            claims = mb.list_claims(user_id)
+        except Exception as e:  # noqa: BLE001 — no store: authored docs only
+            log.warning("rag.customer_rows_unavailable", error=str(e))
+            return []
+        rows = [p.model_dump_json() for p in policies] + [c.model_dump_json() for c in claims]
+        fp = hashlib.sha256("|".join(rows).encode()).hexdigest()
+        cached = self._generated.get(user_id)
+        if cached and cached[0] == fp:
+            return cached[1]
+        with self._lock:
+            docs = generate_documents(
+                user_id, policies, claims, self._authored_about.get(user_id, set())
+            )
+            items = [
+                it
+                for d in docs
+                for it in self._passages(d.text, d.doc_id, user_id, d.domain, d.language, d.about)
+            ]
+            self._generated[user_id] = (fp, items)
+        return items
 
     def search(
         self,
@@ -98,21 +194,21 @@ class CustomerIndex:
         user_id: str,
         allowed_domains: list[str] | None,
         top_k: int | None = None,
+        mentioned_ids: set[str] | None = None,
     ) -> list[Passage]:
-        if not self.items:
-            return []
         top_k = top_k or get_settings().retrieval_top_k
         # Default-deny: no authorized domain (None or empty) means no personal data at all.
         if not allowed_domains:
             return []
         allowed = set(allowed_domains)
 
-        # HARD pre-filter (before scoring): own customer_id ∧ allowed domains.
-        candidates = [
-            it
-            for it in self.items
-            if it.customer_id == user_id and it.passage.domain in allowed
-        ]
+        # HARD pre-filter (before scoring): own customer_id ∧ allowed domains ∧ the claim /
+        # policy the customer named.
+        own = [it for it in self.items if it.customer_id == user_id]
+        own += self._generated_for(user_id)
+        candidates = _anchored(
+            [it for it in own if it.passage.domain in allowed], mentioned_ids or set()
+        )
         if not candidates:
             return []
 
@@ -147,5 +243,8 @@ def search_customer(
     user_id: str,
     allowed_domains: list[str] | None = None,
     top_k: int | None = None,
+    mentioned_ids: set[str] | None = None,
 ) -> list[Passage]:
-    return get_customer_index().search(query, user_id, allowed_domains, top_k=top_k)
+    return get_customer_index().search(
+        query, user_id, allowed_domains, top_k=top_k, mentioned_ids=mentioned_ids
+    )
