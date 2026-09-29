@@ -46,3 +46,21 @@ async def test_paths_differ():
     info = await _run("What does my policy cover?")
     action = await _run("update my email to a@b.com")
     assert info.route != action.route
+
+
+def test_role_chain_pins_model_per_provider():
+    from saral.llm.factory import get_llm
+    from saral.llm.groq import GroqProvider
+
+    p = GroqProvider(model="qwen/qwen3.8-27b")
+    assert p._model == "qwen/qwen3.8-27b"
+    assert get_llm("triage").has_real_provider is False  # conftest blanks keys -> stub only
+
+
+def test_reasoning_params_per_model_family():
+    from saral.llm.openai_compat import _reasoning_for
+
+    assert _reasoning_for("openai/gpt-oss-20b") == ("low", 512)
+    assert _reasoning_for("gemini-3.8-flash") == ("none", 0)
+    assert _reasoning_for("gemini-3.5-flash-lite") == (None, 0)
+    assert _reasoning_for("qwen/qwen3.8-27b") == (None, 0)

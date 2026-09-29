@@ -8,11 +8,11 @@ from saral.llm.openai_compat import OpenAICompatProvider
 
 
 class GroqProvider(OpenAICompatProvider):
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         s = get_settings()
         super().__init__(
             name="groq",
             base_url=s.groq_base_url,
             api_key=s.groq_api_key,
-            model=s.groq_model,
+            model=model or s.groq_model,
         )

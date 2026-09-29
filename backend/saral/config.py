@@ -48,23 +48,29 @@ class Settings(BaseSettings):
     # Free-tier providers, all OpenAI-compatible (per-role free stack).
     groq_api_key: str | None = None
     groq_base_url: str = "https://api.groq.com/openai/v1"
-    groq_model: str = "llama-3.3-70b-versatile"
+    # Free tier (checked 2026-09-29): gpt-oss-120b/20b, qwen3.8-27b. Llama 3.x left it 2026-08-16.
+    groq_model: str = "openai/gpt-oss-20b"
     cerebras_api_key: str | None = None
     cerebras_base_url: str = "https://api.cerebras.ai/v1"
-    cerebras_model: str = "gpt-oss-120b"  # availability is key-specific; GET /v1/models to verify
+    # Cerebras is a 30-day $5 trial now, not a free tier: optional bonus, not in default chains.
+    cerebras_model: str = "gpt-oss-120b"
     gemini_api_key: str | None = None
     gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai"
-    gemini_model: str = "gemini-2.0-flash"
+    gemini_model: str = "gemini-3.5-flash-lite"  # free; 2.x closed to new users (2026-09)
     # Default ordered fallback chain; providers without a key are skipped, then stub.
     # Sarvam is intentionally NOT a chat provider — it is used ONLY for language detection
     # (/text-lid, in triage). All generation/judging runs on Gemini/Groq/Cerebras.
-    llm_provider_order: str = "gemini,groq,cerebras,stub"
+    llm_provider_order: str = "gemini,groq,stub"
     # Per-role chains: models assigned per role, not one global chain. A blank role
     # falls back to llm_provider_order. Synthesis -> Hindi-strong Gemini (Groq/Cerebras
     # fallback); triage-classify -> fast Groq/Cerebras; judge is PINNED (no mid-suite swap).
-    llm_role_synthesis: str = "gemini,groq,cerebras,stub"
-    llm_role_triage: str = "groq,cerebras,stub"
-    llm_role_judge: str = "gemini,stub"
+    # Entries are "provider" or "provider:model"; free quotas are per model, so each role pins
+    # its own model and roles don't drain one another.
+    llm_role_synthesis: str = (
+        "gemini:gemini-3.8-flash,gemini:gemini-3.5-flash-lite,groq:openai/gpt-oss-120b,stub"
+    )
+    llm_role_triage: str = "groq:openai/gpt-oss-20b,groq:qwen/qwen3.8-27b,stub"
+    llm_role_judge: str = "groq:openai/gpt-oss-120b,stub"
     anthropic_model: str = "claude-sonnet-4-6"
     sarvam_model: str = "sarvam-30b"
     # Use Sarvam /text-lid for language detection. When the key is absent or

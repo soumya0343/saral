@@ -33,6 +33,8 @@ _REGISTRY: dict[str, type] = {
     "cerebras": CerebrasProvider,
     "stub": StubProvider,
 }
+# OpenAI-compatible providers that accept a per-role model override.
+_MODEL_OVERRIDABLE = {"gemini", "groq", "cerebras"}
 
 
 class FallbackLLM:
@@ -75,6 +77,10 @@ class FallbackLLM:
                 try:
                     result = await getattr(provider, method)(*args, **kwargs)
                     self.last_tokens = getattr(provider, "last_total_tokens", 0)
+                    if provider.name == "stub" and self.has_real_provider:
+                        # Real keys are set but every real model failed: the turn is served by
+                        # the deterministic floor. Loud, so free-tier drift is never silent.
+                        log.error("llm.served_by_stub", method=method, last_error=str(last_err))
                     return result
                 except LLMError as e:
                     last_err = e
@@ -95,12 +101,20 @@ def get_llm(role: str = "default") -> FallbackLLM:
     settings = get_settings()
     chain = settings.role_chain(role) if role != "default" else settings.provider_chain
     providers: list[LLMClient] = []
-    for key in chain:
+    for spec in chain:
+        # "provider" or "provider:model" — free-tier quotas are per model, so a role can pin its
+        # own model (e.g. groq:openai/gpt-oss-20b) and roles don't drain each other's quota.
+        key, _, model = spec.partition(":")
         cls = _REGISTRY.get(key)
         if cls is None:
-            log.warning("llm.unknown_provider", provider=key)
+            log.warning("llm.unknown_provider", provider=spec)
             continue
-        providers.append(cls())
+        if model and key in _MODEL_OVERRIDABLE:
+            providers.append(cls(model=model))
+        else:
+            if model:
+                log.warning("llm.model_override_ignored", provider=key, model=model)
+            providers.append(cls())
     if not any(p.name == "stub" for p in providers):
         providers.append(StubProvider())
     log.info("llm.configured", role=role, chain=[p.name for p in providers])

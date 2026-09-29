@@ -25,6 +25,8 @@ async def run() -> None:
     settings = get_settings()
     r = get_redis()
     await ensure_group()
+    # Advisory: log which configured free-tier models are actually served (never blocks).
+    _probe_task = asyncio.create_task(_probe_models())  # noqa: RUF006 — fire-and-forget
     consumer = f"{socket.gethostname()}-{id(object())}"
     log.info(
         "worker.started",
@@ -56,6 +58,15 @@ async def run() -> None:
             continue
         for _stream, entries in resp:
             await _process_entries(r, settings, entries)
+
+
+async def _probe_models() -> None:
+    try:
+        from saral.llm.probe import probe_chains
+
+        await probe_chains()
+    except Exception as e:  # noqa: BLE001
+        log.warning("worker.probe_failed", error=str(e))
 
 
 async def _reap() -> None:

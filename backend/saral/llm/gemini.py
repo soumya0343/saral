@@ -11,11 +11,11 @@ from saral.llm.openai_compat import OpenAICompatProvider
 
 
 class GeminiProvider(OpenAICompatProvider):
-    def __init__(self) -> None:
+    def __init__(self, model: str | None = None) -> None:
         s = get_settings()
         super().__init__(
             name="gemini",
             base_url=s.gemini_base_url,
             api_key=s.gemini_api_key,
-            model=s.gemini_model,
+            model=model or s.gemini_model,
         )

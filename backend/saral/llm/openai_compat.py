@@ -22,6 +22,22 @@ T = TypeVar("T", bound=BaseModel)
 log = get_logger(__name__)
 
 
+
+def _reasoning_for(model: str) -> tuple[str | None, int]:
+    """(reasoning_effort, min max_tokens) for a model id.
+
+    gpt-oss (Groq) cannot disable reasoning: keep it low with a token floor. Gemini 3 Flash
+    thinks by default and accepts "none" (support phrasing needs no thinking). Flash-Lite does
+    not think and rejects the parameter. Everything else is sent unchanged.
+    """
+    m = model.lower()
+    if "gpt-oss" in m:
+        return "low", 512
+    if m.startswith("gemini-3") and "flash" in m and "lite" not in m:
+        return "none", 0
+    return None, 0
+
+
 def strip_fences(text: str) -> str:
     t = text.strip()
     if t.startswith("```"):
@@ -90,6 +106,20 @@ class OpenAICompatProvider:
             return content
         raise LLMError(f"{self.name}: all {n} keys rate-limited (429)") from last_err
 
+    def _payload(self, messages: list[Message], max_tokens: int) -> dict:
+        payload: dict = {
+            "model": self._model,
+            "messages": self._to_openai(messages),
+            "max_tokens": max_tokens,
+        }
+        # Reasoning models spend hidden thinking tokens out of max_tokens, so a short call can come
+        # back with empty content. Pin the effort per model family (verified live 2026-09-29).
+        effort, floor = _reasoning_for(self._model)
+        if effort is not None:
+            payload["reasoning_effort"] = effort
+        payload["max_tokens"] = max(max_tokens, floor)
+        return payload
+
     @staticmethod
     def _to_openai(messages: list[Message]) -> list[dict]:
         return [{"role": m.role, "content": m.content} for m in messages]
@@ -97,13 +127,7 @@ class OpenAICompatProvider:
     async def complete(self, messages: list[Message], *, max_tokens: int = 1024) -> str:
         if not self.available:
             raise LLMError(f"{self.name}: no API key")
-        return await self._chat(
-            {
-                "model": self._model,
-                "messages": self._to_openai(messages),
-                "max_tokens": max_tokens,
-            }
-        )
+        return await self._chat(self._payload(messages, max_tokens))
 
     async def structured(
         self, messages: list[Message], schema: type[T], *, max_tokens: int = 1024
@@ -121,14 +145,9 @@ class OpenAICompatProvider:
                 ),
             ),
         ]
-        raw = await self._chat(
-            {
-                "model": self._model,
-                "messages": self._to_openai(instructed),
-                "max_tokens": max_tokens,
-                "response_format": {"type": "json_object"},
-            }
-        )
+        payload = self._payload(instructed, max_tokens)
+        payload["response_format"] = {"type": "json_object"}
+        raw = await self._chat(payload)
         try:
             return schema.model_validate_json(strip_fences(raw))
         except ValidationError as e:
