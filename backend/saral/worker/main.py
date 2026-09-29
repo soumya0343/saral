@@ -6,6 +6,7 @@
   resumes from its last node when XAUTOCLAIM hands the entry to a live worker.
 - While a run executes, a heartbeat keeps its stream entry "fresh" so a slow (but alive) run is
   never reclaimed and executed twice by another worker.
+- At startup the embedder and RAG indexes are built before the first entry is read.
 - Periodically: orphan reaper, and a one-off model probe at startup.
 """
 
@@ -33,7 +34,18 @@ _RECLAIM_INTERVAL_S = 15  # how often to look for entries abandoned by dead work
 
 async def run() -> None:
     async with open_checkpointer():
+        await _warm_rag()
         await Worker().loop()
+
+
+async def _warm_rag() -> None:
+    """Load e5 + build the indexes before consuming, so the first run isn't ~30s slower."""
+    try:
+        from saral.rag.index import warm_up
+
+        await asyncio.to_thread(warm_up)
+    except Exception as e:  # noqa: BLE001 — retrieval still loads lazily on first query
+        log.warning("worker.rag_warm_failed", error=str(e))
 
 
 class Worker:

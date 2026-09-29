@@ -91,8 +91,7 @@ sarvam/
 │   └── adr/                # 4 ADRs (see §15)
 ├── .claude/                # Saral_PRD_TRD.md, CONTEXT.md — product/terminology source
 ├── .github/                # CI workflows
-├── Dockerfile.api          # uvicorn image (ships data/ read-only)
-├── Dockerfile.worker       # worker image
+├── Dockerfile.api          # shared image: api (default CMD), worker, migrate (ships data/ read-only)
 ├── docker-compose.yml      # local: postgres + redis + api + worker
 ├── fly.toml                # Fly: app + worker process groups (region bom)
 ├── render.yaml             # Render Blueprint: api, worker, PG, Redis

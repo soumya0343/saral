@@ -1,5 +1,14 @@
 name: saral
 
+# api, worker and migrate share ONE image; only the command differs. Only `api` declares the
+# build (three services building one tag race each other); the others run the tag it produces.
+# mem_limit caps each container so a runaway is OOM-killed instead of swapping the Docker VM.
+x-app: &app
+  image: saral-app:local
+  env_file:
+    - path: .env
+      required: false
+
 services:
   postgres:
     image: postgres:16
@@ -7,6 +16,7 @@ services:
       POSTGRES_USER: saral
       POSTGRES_PASSWORD: saral
       POSTGRES_DB: saral
+    mem_limit: 384m
     ports:
       - "5432:5432"
     volumes:
@@ -20,6 +30,7 @@ services:
   redis:
     image: redis:7
     command: ["redis-server", "--appendonly", "yes"]
+    mem_limit: 128m
     ports:
       - "6379:6379"
     volumes:
@@ -32,14 +43,10 @@ services:
 
   # One-shot: apply DB migrations against the docker postgres before api/worker start.
   migrate:
-    build:
-      context: .
-      dockerfile: Dockerfile.api
+    <<: *app
+    mem_limit: 256m
     environment:
       DATABASE_URL: postgresql+asyncpg://saral:saral@postgres:5432/saral
-    env_file:
-      - path: .env
-        required: false
     command: ["alembic", "upgrade", "head"]
     restart: "no"
     depends_on:
@@ -47,15 +54,15 @@ services:
         condition: service_healthy
 
   api:
+    <<: *app
     build:
       context: .
       dockerfile: Dockerfile.api
+    # ~120MB normally; e5 is loaded here only by POST /eval — raise to 1g if you run evals on the api.
+    mem_limit: 512m
     environment:
       DATABASE_URL: postgresql+asyncpg://saral:saral@postgres:5432/saral
       REDIS_URL: redis://redis:6379/0
-    env_file:
-      - path: .env
-        required: false
     ports:
       - "8000:8000"
     depends_on:
@@ -67,15 +74,13 @@ services:
         condition: service_completed_successfully
 
   worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
+    <<: *app
+    command: ["python", "-m", "saral.worker.main"]
+    # Holds torch + multilingual-e5: measured ~870MB resident, ~965MB peak during index warm-up.
+    mem_limit: 1536m
     environment:
       DATABASE_URL: postgresql+asyncpg://saral:saral@postgres:5432/saral
       REDIS_URL: redis://redis:6379/0
-    env_file:
-      - path: .env
-        required: false
     depends_on:
       postgres:
         condition: service_healthy

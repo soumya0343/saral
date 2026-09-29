@@ -32,8 +32,11 @@ services:
   - type: worker
     name: saral-worker
     runtime: docker
-    dockerfilePath: ./Dockerfile.worker
-    plan: starter
+    dockerfilePath: ./Dockerfile.api   # shared image; the command selects the process
+    dockerCommand: python -m saral.worker.main
+    # torch + multilingual-e5: ~870MB resident, ~965MB peak — starter (512MB) OOMs. Render has no
+    # 1GB tier; standard is the next size up (2GB).
+    plan: standard
     region: singapore
     envVars:
       - { key: APP_ENV, value: prod }

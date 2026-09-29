@@ -117,3 +117,25 @@ def search_knowledge(
     merged = personal + [p for p in generic if p.doc_id not in {pp.doc_id for pp in personal}]
     k = top_k or get_settings().retrieval_top_k
     return merged[: max(k, len(personal))]
+
+
+def warm_up() -> None:
+    """Load the embedder and build both indexes now, so the first query doesn't pay for it.
+
+    With e5 this is ~model load + corpus embedding (tens of seconds on a small CPU). Blocking —
+    call it via `asyncio.to_thread`.
+    """
+    import time
+
+    from saral.rag.customer_index import get_customer_index
+
+    t0 = time.monotonic()
+    generic = get_index()
+    personal = get_customer_index()
+    generic.embedder.embed_query("warm-up")  # first encode allocates the inference buffers
+    log.info(
+        "rag.warm",
+        seconds=round(time.monotonic() - t0, 1),
+        passages=len(generic.passages),
+        customer_passages=len(personal.items),
+    )

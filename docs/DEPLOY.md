@@ -34,6 +34,14 @@ Only the datastore URLs and `SESSION_SECRET` must be set in production.
 | `DEMO_MODE` | `false` | no SMS channel: show the OTP as a simulated SMS popup (set `true` for the public demo) |
 | `OTP_MAX_ATTEMPTS` | `5` | wrong OTP guesses before a challenge is burned |
 
+## Sizing
+
+One image (`Dockerfile.api`) runs every process; the command picks api or worker. The worker
+holds torch + multilingual-e5 — measured ~870MB resident, ~965MB peak while the indexes warm at
+startup — so it needs **≥1GB** (configured: Fly `1536mb`, Render `standard`). The api idles at
+~100MB and fits 512MB, but `POST /eval` loads e5 in the api process: run evals in CI or on the
+worker, or size the api like the worker.
+
 ## Fly.io
 
 ```bash

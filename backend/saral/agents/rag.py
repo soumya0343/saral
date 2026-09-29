@@ -9,6 +9,8 @@ It never free-generates facts; synthesis composes the answer constrained to thes
 
 from __future__ import annotations
 
+import asyncio
+
 from saral.rag.index import search_knowledge
 from saral.schemas import Passage
 
@@ -23,6 +25,12 @@ class RagAgent:
         user_id: str | None = None,
         allowed_domains: list[str] | None = None,
     ) -> list[Passage]:
-        return search_knowledge(
-            query, top_k=top_k, user_id=user_id, allowed_domains=allowed_domains
+        # Embedding + BM25 are CPU-bound (and the first call may build the indexes): run off
+        # the event loop so concurrent runs, heartbeats and an in-process API aren't frozen.
+        return await asyncio.to_thread(
+            search_knowledge,
+            query,
+            top_k=top_k,
+            user_id=user_id,
+            allowed_domains=allowed_domains,
         )

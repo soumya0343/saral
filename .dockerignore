@@ -1,0 +1,45 @@
+# Keep the build context small. Without this file the context is ~1.3GB
+# (.venv 914MB + frontend/node_modules 352MB + .git + .next) and every
+# `docker compose up --build` ships all of it to the builder.
+
+# --- VCS ---
+.git
+.gitignore
+
+# --- Python: deps come from uv.lock, never from these ---
+.venv
+__pycache__
+*.py[cod]
+*.egg-info
+.mypy_cache
+.pytest_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# --- Node / Next: the frontend deploys to Vercel, it is not built in this image ---
+frontend
+node_modules
+
+# --- Local env + secrets: compose injects .env at runtime via env_file ---
+.env
+.env.*
+
+# --- Data artifacts the image must not carry ---
+# eval reports are local run output (backend/saral/eval/store.py creates the dir on write).
+# The corpus / customers / scenarios ARE needed by `COPY data ./data`, so data/ itself
+# stays in the context.
+data/eval_reports
+data/**/*.index
+data/**/*.faiss
+
+# --- Docs, editor, agent scaffolding: never read at runtime ---
+docs
+.claude
+.agents
+.kilo
+k8s
+tests
+.vscode
+.DS_Store
+*.swp

@@ -80,3 +80,29 @@ jobs:
         run: npx tsc --noEmit
       - name: Build
         run: npm run build
+
+  # Build the one production image (api/worker/migrate) and prove the baked e5 weights load with
+  # the Hub offline — lint/tests above never touch the Dockerfile.
+  docker:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile.api
+          tags: saral-app:ci
+          load: true
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+      - name: Smoke test (imports + offline e5 load)
+        run: |
+          docker run --rm saral-app:ci python -c "
+          import saral.api.app, saral.worker.main
+          from saral.rag.embedder import get_embedder
+          e = get_embedder()
+          assert type(e).__name__ == 'SentenceTransformerEmbedder', type(e).__name__
+          assert len(e.embed_query('namaste')) > 0
+          print('ok')
+          "
