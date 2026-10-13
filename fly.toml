@@ -60,8 +60,8 @@ primary_region = "bom"   # Mumbai — Sarvam proximity + DPDP data residency
   cpus      = 1
 
 # The worker holds torch + multilingual-e5: measured ~870MB resident, ~965MB peak at warm-up
-# (512mb OOMs on the first RAG query). The api stays at 512mb (~100MB) — it only loads e5 for
-# POST /eval, so run evals from the worker/CI, not the api machine.
+# (512mb OOMs on the first RAG query). The api stays at 512mb (~100MB). POST /eval/run starts a
+# second Python process there for the offline suite (no e5); prefer running evals from CI.
 [[vm]]
   processes = ["worker"]
   memory    = "1536mb"

@@ -110,13 +110,16 @@ export default function EvalDashboard() {
     try {
       const r = await fetch(`${API_URL}/eval/run`, { method: "POST" });
       if (!r.ok) {
-        // In prod, running the suite spends free-tier quota, so it isn't public: use `make eval`.
+        // The button runs the offline tier (stub models, no quota). In prod it needs the
+        // service key, and the live tier is CLI-only.
+        const detail = await r
+          .json()
+          .then((b) => (typeof b.detail === "string" ? b.detail : ""))
+          .catch(() => "");
         setError(
           r.status === 404 || r.status === 401
             ? "Running the suite over HTTP is disabled on this deployment. Run `make eval` instead."
-            : r.status === 409
-              ? "This server uses real models: run the live eval from the CLI (`make eval-live`)."
-              : `Eval run failed (${r.status}).`,
+            : detail || `Eval run failed (${r.status}).`,
         );
         return;
       }
@@ -137,13 +140,13 @@ export default function EvalDashboard() {
           disabled={running}
           className="rounded-lg bg-neutral-900 px-4 py-2 text-sm text-white disabled:opacity-50 dark:bg-white dark:text-neutral-900"
         >
-          {running ? "Running…" : "Run eval"}
+          {running ? "Running…" : "Run offline eval"}
         </button>
       </div>
 
       {error && !report && (
         <p className="mt-6 text-sm text-neutral-500">
-          No report yet ({error}). Click “Run eval”.
+          No report yet ({error}). Click “Run offline eval”.
         </p>
       )}
       {error && report && <p className="mt-4 text-sm text-amber-600">{error}</p>}

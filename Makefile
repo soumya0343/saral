@@ -40,7 +40,8 @@ migrate: ## Apply DB migrations (Phase 1+)
 	uv run alembic upgrade head
 
 # Offline tier: stub LLM + hashing embedder, whatever .env says (deterministic, free, CI).
-EVAL_OFFLINE_ENV = APP_ENV=test EMBEDDER=hashing LLM_PROVIDER_ORDER=stub LLM_ROLE_TRIAGE=stub \
+# STORE_BACKEND=memory: the eval wipes the mock store per scenario, never the durable one.
+EVAL_OFFLINE_ENV = APP_ENV=test STORE_BACKEND=memory EMBEDDER=hashing LLM_PROVIDER_ORDER=stub LLM_ROLE_TRIAGE=stub \
 	LLM_ROLE_SYNTHESIS=stub LLM_ROLE_JUDGE=stub GROQ_API_KEY= GEMINI_API_KEY= CEREBRAS_API_KEY= \
 	SARVAM_API_KEY= ANTHROPIC_API_KEY= LOG_LEVEL=ERROR PYTHONPATH=backend
 
@@ -54,7 +55,7 @@ eval-baseline: ## Re-baseline the offline tier after a genuine improvement (comm
 	$(EVAL_OFFLINE_ENV) uv run python -m saral.eval.gate --update
 
 eval-live: ## Live eval with the real free models from .env (throttled; ARGS="--limit 20" / "--resume")
-	PYTHONPATH=backend uv run python -m saral.eval.runner --tier live $(ARGS)
+	STORE_BACKEND=memory PYTHONPATH=backend uv run python -m saral.eval.runner --tier live $(ARGS)
 
 eval-heldout: ## Injection guard on the blind held-out sets (not gated; see saral/eval/heldout.py)
 	LOG_LEVEL=ERROR PYTHONPATH=backend uv run python -m saral.eval.heldout

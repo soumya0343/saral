@@ -153,6 +153,13 @@ async def run_eval(
                 else "live needs real LLM keys (see .env.example)"
             )
         )
+    if settings.store_backend != "memory":
+        # Every scenario wipes and reseeds the mock core system and the RM queue. Against the
+        # durable store that deletes real dev data (customers, claims, requests, sign-ins).
+        raise EvalConfigError(
+            "the eval resets the store before every scenario and must not run against the "
+            "durable one: set STORE_BACKEND=memory (`make eval` / `make eval-live` do)"
+        )
     scenarios = load_scenarios()
     if only:
         # Accept "a b c" and "a,b,c" alike.

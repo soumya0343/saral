@@ -58,7 +58,8 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.api
-    # ~120MB normally; e5 is loaded here only by POST /eval — raise to 1g if you run evals on the api.
+    # ~120MB normally. POST /eval/run starts a second Python process here for the offline suite
+    # (stub models, hashing embedder, no e5) — raise the limit if that run is OOM-killed.
     mem_limit: 512m
     environment:
       DATABASE_URL: postgresql+asyncpg://saral:saral@postgres:5432/saral

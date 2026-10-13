@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import pytest
 
+from saral.config import get_settings
 from saral.eval.schemas import Category, Expected, JudgeVerdict, Scenario, ScenarioResult, Turn
 from saral.tools import mock_backend as mb
 
@@ -158,6 +159,62 @@ def test_tier_is_derived_from_config_not_claimed():
     from saral.eval.runner import detect_tier
 
     assert detect_tier() == "offline"  # conftest: stub chains + hashing embedder
+
+
+async def test_eval_refuses_the_durable_store(monkeypatch):
+    """Every scenario wipes the mock store: against Postgres that deletes real dev data."""
+    from saral.eval.runner import EvalConfigError, run_eval
+    from saral.tools import mock_backend as mb
+
+    monkeypatch.setattr(get_settings(), "store_backend", "postgres")
+    monkeypatch.setattr(mb, "_reset_state", lambda: pytest.fail("store was reset"))
+    with pytest.raises(EvalConfigError, match="STORE_BACKEND=memory"):
+        await run_eval(expect_tier="offline", persist=False, save_report=False)
+
+
+def test_eval_button_runs_offline_in_a_child_process(monkeypatch, tmp_path):
+    """POST /eval/run must work on a server with real keys and a durable store: it runs the
+    offline tier in a child process (stub models, in-memory store) and returns its report."""
+    import asyncio
+
+    from fastapi.testclient import TestClient
+
+    from saral.api import eval_routes
+    from saral.api.app import create_app
+    from saral.eval import store
+    from saral.eval.schemas import EvalReport, MetricSummary
+
+    monkeypatch.setattr(get_settings(), "eval_reports_dir", str(tmp_path))
+    monkeypatch.setattr(get_settings(), "groq_api_key", "k")  # a "live" server
+    monkeypatch.setattr(get_settings(), "store_backend", "postgres")
+    seen: dict = {}
+
+    class _Proc:
+        returncode = 0
+
+        async def communicate(self):
+            required = {
+                k: 1 for k, f in MetricSummary.model_fields.items() if f.is_required()
+            }
+            report = EvalReport(
+                config_version="v1", created_at="2026-10-13T00:00:00+00:00", tier="offline",
+                judge_model="rubric", summary=MetricSummary(**required), results=[],
+            )
+            store.write_report(report, tmp_path)
+            return b"", b""
+
+    async def fake_exec(*cmd, env, **_):
+        seen.update(cmd=cmd, env=env)
+        return _Proc()
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    r = TestClient(create_app()).post("/eval/run")
+    assert r.status_code == 200 and r.json()["tier"] == "offline"
+    assert seen["cmd"][1:] == ("-m", "saral.eval.runner", "--tier", "offline")
+    env = seen["env"]
+    assert env["STORE_BACKEND"] == "memory" and env["LLM_ROLE_SYNTHESIS"] == "stub"
+    assert env["GROQ_API_KEY"] == "" and env["EMBEDDER"] == "hashing"
+    assert eval_routes._BACKEND_DIR in env["PYTHONPATH"]
 
 
 # --- gate ------------------------------------------------------------------------------------

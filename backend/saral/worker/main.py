@@ -189,7 +189,10 @@ def main() -> None:
     if port:
         from prometheus_client import start_http_server
 
-        start_http_server(port)  # the worker is its own process: it serves its own metrics
+        try:
+            start_http_server(port)  # the worker is its own process: it serves its own metrics
+        except OSError as e:  # port taken: run without metrics rather than not at all
+            log.warning("worker.metrics_port_unavailable", port=port, error=str(e))
     asyncio.run(run())
 
 

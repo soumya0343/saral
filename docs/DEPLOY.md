@@ -42,8 +42,9 @@ Only the datastore URLs, `SESSION_SECRET` and `RM_REQUEST_KEY` must be set in pr
 One image (`Dockerfile.api`) runs every process; the command picks api or worker. The worker
 holds torch + multilingual-e5 — measured ~870MB resident, ~965MB peak while the indexes warm at
 startup — so it needs **≥1GB** (configured: Fly `1536mb`, Render `standard`). The api idles at
-~100MB and fits 512MB, but `POST /eval` loads e5 in the api process: run evals in CI or on the
-worker, or size the api like the worker.
+~100MB and fits 512MB. `POST /eval/run` starts a second Python process on the api machine for
+the offline suite (stub models, hashing embedder, in-memory store; no e5): prefer `make eval` in
+CI, or leave the api headroom for it.
 
 ## Fly.io
 
