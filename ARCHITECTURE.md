@@ -177,7 +177,7 @@ name a different customer, and a conversation that belongs to someone else retur
 | `POST /escalations/{id}/resolve` | `X-Service-Key` | legacy: record who handled an escalation |
 | `POST /auth/step-up` | bearer | standalone step-up harness |
 | `POST /auth/session` | dev/test only | mint a token for a user id (disabled in prod) |
-| `POST /eval/run` | open in dev, `X-Service-Key` in prod | run the offline tier in a child process (stub models, hashing embedder, in-memory store), whatever the server is configured with. The live tier is CLI-only (`make eval-live`) |
+| `POST /eval/run` | open in dev; in prod `X-Service-Key`, or anyone with `EVAL_RUN_PUBLIC` (3 runs per IP per hour) | run the offline tier in a child process (stub models, hashing embedder, in-memory store), whatever the server is configured with. The live tier is CLI-only (`make eval-live`) |
 | `GET /eval/report`, `GET /eval/reports` | none | latest report, all reports |
 | `GET /health`, `GET /ready`, `GET /metrics` | none | liveness, readiness (DB + Redis), Prometheus |
 

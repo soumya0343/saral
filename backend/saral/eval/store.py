@@ -22,6 +22,15 @@ def latest_report(reports_dir: str | Path, tier: EvalTier | None = None) -> Eval
     return reports[-1] if reports else None
 
 
+def prune_reports(reports_dir: str | Path, keep: int, tier: EvalTier = "offline") -> int:
+    """Delete all but the newest `keep` reports of `tier` (other tiers are never touched)."""
+    paths = sorted(Path(reports_dir).glob(f"report_*_{tier}_*.json"))
+    old = paths[:-keep] if keep > 0 else paths
+    for p in old:
+        p.unlink(missing_ok=True)
+    return len(old)
+
+
 def write_report(report: EvalReport, reports_dir: str | Path) -> Path:
     d = Path(reports_dir)
     d.mkdir(parents=True, exist_ok=True)

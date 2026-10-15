@@ -110,16 +110,19 @@ export default function EvalDashboard() {
     try {
       const r = await fetch(`${API_URL}/eval/run`, { method: "POST" });
       if (!r.ok) {
-        // The button runs the offline tier (stub models, no quota). In prod it needs the
-        // service key, and the live tier is CLI-only.
+        // The button runs the offline tier (stub models, no quota). In prod it needs the service
+        // key unless the deployment opens it (EVAL_RUN_PUBLIC, rate-limited per IP); the live
+        // tier is CLI-only.
         const detail = await r
           .json()
           .then((b) => (typeof b.detail === "string" ? b.detail : ""))
           .catch(() => "");
         setError(
           r.status === 404 || r.status === 401
-            ? "Running the suite over HTTP is disabled on this deployment. Run `make eval` instead."
-            : detail || `Eval run failed (${r.status}).`,
+            ? "Running evals is limited to the operator on this deployment (`make eval`). Showing the latest report."
+            : r.status === 429
+              ? "Run limit reached for your network — try again in an hour. Showing the latest report."
+              : detail || `Eval run failed (${r.status}).`,
         );
         return;
       }

@@ -60,6 +60,9 @@ for key, value in {
     "CLIENT_IP_HEADER": "X-Forwarded-For",
     "CLIENT_IP_FROM_RIGHT": "1",
     "WORKER_METRICS_PORT": "0",
+    # Public demo: anyone may run the offline eval from /eval (no model quota, never touches
+    # the live database), 3 runs per client IP per hour; only the newest 20 reports are kept.
+    "EVAL_RUN_PUBLIC": "true",
 }.items():
     os.environ.setdefault(key, value)
 # The image sets PYTHONPATH already: prepend, so child processes (worker, alembic) import saral.

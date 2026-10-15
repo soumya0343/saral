@@ -145,6 +145,13 @@ class Settings(BaseSettings):
     # Languages with too few/unanimous labels are also treated as un-validated.
     judge_kappa_floor: float = 0.6
     eval_live_gap_s: float = 2.0  # pause between live scenarios (free-tier RPM headroom)
+    # Let anyone run the OFFLINE suite from the dashboard in prod (a public demo). It costs no
+    # model quota and never touches the live store (child process, stub models, in-memory
+    # store); these cap the remaining cost: runs per client IP per hour, and how many offline
+    # report files are kept (each run writes one).
+    eval_run_public: bool = False
+    eval_run_public_per_hour: int = 3
+    eval_reports_keep: int = 20
 
     # --- Agent control ---
     max_step_count: int = 25  # supervisor loop guard

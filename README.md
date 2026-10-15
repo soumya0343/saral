@@ -11,6 +11,8 @@ validated by a labeled evaluation suite with an LLM judge.
 **Live demo:** https://soumya0343-saral.hf.space — tap a demo account (synthetic data; the OTP
 appears as a simulated SMS popup). Free Hugging Face Space; it sleeps when unused, so the first
 visit can take about a minute.
+The eval dashboard is at [/eval](https://soumya0343-saral.hf.space/eval): "Run offline eval" runs
+all 171 scenarios live in about 15 seconds.
 
 ## Why this is interesting
 
@@ -228,7 +230,7 @@ metrics at `localhost:8000/metrics`.
 | `GET` | `/ready`, `/metrics` | readiness (DB + Redis) and Prometheus metrics |
 | `POST` | `/auth/step-up` | standalone step-up harness |
 | `POST` | `/auth/session` | dev/test only: mint a token for a user id (disabled in prod) |
-| `POST` | `/eval/run` | run the offline eval in a child process (open in dev, `X-Service-Key` in prod); the dashboard's button calls this |
+| `POST` | `/eval/run` | run the offline eval in a child process (open in dev; in prod `X-Service-Key`, or anyone when `EVAL_RUN_PUBLIC`, rate-limited); the dashboard's button calls this |
 | `GET` | `/eval/report`, `/eval/reports` | latest report, all reports |
 
 Every customer route needs `Authorization: Bearer <access_token>` and only sees the token's own

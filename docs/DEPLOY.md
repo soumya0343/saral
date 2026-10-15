@@ -93,8 +93,13 @@ Hugging Face secrets are write-only. The local copy of the generated three is
 `hf spaces secrets add <user>/saral -s KEY=value`.
 
 Everything else has a default in `app.py` (`APP_ENV=prod`, `DEMO_MODE=true`, Postgres and Redis
-URLs, `STORE_BACKEND` / `CHECKPOINT_BACKEND=postgres`, the client-IP settings); a Space variable
-overrides any of them.
+URLs, `STORE_BACKEND` / `CHECKPOINT_BACKEND=postgres`, the client-IP settings,
+`EVAL_RUN_PUBLIC=true`); a Space variable overrides any of them.
+
+**Eval dashboard.** On the Space anyone can press "Run offline eval" at `/eval`: the 171-scenario
+offline suite runs in a child process with stub models and an in-memory store (about 15s), so it
+spends no model quota and never touches the live database. Each client IP gets 3 runs an hour,
+one run at a time overall, and only the newest 20 offline reports are kept.
 
 ### Operating it
 
@@ -131,6 +136,7 @@ the app refuses to start without `SESSION_SECRET` (≥32 bytes) and `RM_REQUEST_
 | `LLM_ROLE_SYNTHESIS` / `_TRIAGE` / `_JUDGE` | free Gemini / Groq chains | see `.env.example` |
 | `STORE_BACKEND` / `CHECKPOINT_BACKEND` | `memory` | set `postgres` in prod for durability and crash-resume |
 | `SERVICE_API_KEY` | unset | RM endpoints (`/rm/requests…`), legacy `/escalations/{id}/resolve`, and `POST /eval/run` in prod; unset disables them |
+| `EVAL_RUN_PUBLIC` | `false` | prod: let anyone run the offline eval from the dashboard, limited by `EVAL_RUN_PUBLIC_PER_HOUR` (3) per client IP; `EVAL_REPORTS_KEEP` (20) offline reports are kept |
 | `RM_APPROVAL_ACTIONS` | `update_contact,raise_ticket,file_claim` | confirmed writes raised to the RM instead of executed |
 | `DEMO_MODE` | `false` | no SMS channel: show the OTP as a simulated SMS popup |
 | `CLIENT_IP_HEADER` | unset | header with the real client IP for rate limits (`Fly-Client-IP` on Fly, `X-Forwarded-For` on Hugging Face) |

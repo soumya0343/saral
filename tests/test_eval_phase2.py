@@ -172,35 +172,29 @@ async def test_eval_refuses_the_durable_store(monkeypatch):
         await run_eval(expect_tier="offline", persist=False, save_report=False)
 
 
-def test_eval_button_runs_offline_in_a_child_process(monkeypatch, tmp_path):
-    """POST /eval/run must work on a server with real keys and a durable store: it runs the
-    offline tier in a child process (stub models, in-memory store) and returns its report."""
-    import asyncio
-
-    from fastapi.testclient import TestClient
-
-    from saral.api import eval_routes
-    from saral.api.app import create_app
-    from saral.eval import store
+def _report(created_at: str = "2026-10-13T00:00:00+00:00", tier: str = "offline"):
     from saral.eval.schemas import EvalReport, MetricSummary
 
-    monkeypatch.setattr(get_settings(), "eval_reports_dir", str(tmp_path))
-    monkeypatch.setattr(get_settings(), "groq_api_key", "k")  # a "live" server
-    monkeypatch.setattr(get_settings(), "store_backend", "postgres")
+    required = {k: 1 for k, f in MetricSummary.model_fields.items() if f.is_required()}
+    return EvalReport(
+        config_version="v1", created_at=created_at, tier=tier, judge_model="rubric",
+        summary=MetricSummary(**required), results=[],
+    )
+
+
+def _fake_eval_child(monkeypatch, reports_dir) -> dict:
+    """Replace the eval child process with one that writes a report; returns what it saw."""
+    import asyncio
+
+    from saral.eval import store
+
     seen: dict = {}
 
     class _Proc:
         returncode = 0
 
         async def communicate(self):
-            required = {
-                k: 1 for k, f in MetricSummary.model_fields.items() if f.is_required()
-            }
-            report = EvalReport(
-                config_version="v1", created_at="2026-10-13T00:00:00+00:00", tier="offline",
-                judge_model="rubric", summary=MetricSummary(**required), results=[],
-            )
-            store.write_report(report, tmp_path)
+            store.write_report(_report(), reports_dir)
             return b"", b""
 
     async def fake_exec(*cmd, env, **_):
@@ -208,6 +202,21 @@ def test_eval_button_runs_offline_in_a_child_process(monkeypatch, tmp_path):
         return _Proc()
 
     monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_exec)
+    monkeypatch.setattr(get_settings(), "eval_reports_dir", str(reports_dir))
+    return seen
+
+
+def test_eval_button_runs_offline_in_a_child_process(monkeypatch, tmp_path):
+    """POST /eval/run must work on a server with real keys and a durable store: it runs the
+    offline tier in a child process (stub models, in-memory store) and returns its report."""
+    from fastapi.testclient import TestClient
+
+    from saral.api import eval_routes
+    from saral.api.app import create_app
+
+    monkeypatch.setattr(get_settings(), "groq_api_key", "k")  # a "live" server
+    monkeypatch.setattr(get_settings(), "store_backend", "postgres")
+    seen = _fake_eval_child(monkeypatch, tmp_path)
     r = TestClient(create_app()).post("/eval/run")
     assert r.status_code == 200 and r.json()["tier"] == "offline"
     assert seen["cmd"][1:] == ("-m", "saral.eval.runner", "--tier", "offline")
@@ -215,6 +224,56 @@ def test_eval_button_runs_offline_in_a_child_process(monkeypatch, tmp_path):
     assert env["STORE_BACKEND"] == "memory" and env["LLM_ROLE_SYNTHESIS"] == "stub"
     assert env["GROQ_API_KEY"] == "" and env["EMBEDDER"] == "hashing"
     assert eval_routes._BACKEND_DIR in env["PYTHONPATH"]
+
+
+def test_public_demo_lets_anyone_run_it_rate_limited_per_ip(monkeypatch, tmp_path):
+    """EVAL_RUN_PUBLIC on a prod deployment: no key needed, but each client IP is limited;
+    the operator's service key is not."""
+    from fastapi.testclient import TestClient
+
+    from saral.api import eval_routes
+    from saral.api.app import create_app
+
+    s = get_settings()
+    monkeypatch.setattr(s, "app_env", "prod")
+    monkeypatch.setattr(s, "service_api_key", "s3cret")
+    _fake_eval_child(monkeypatch, tmp_path)
+    hits: list[tuple] = []
+
+    async def fake_hit(bucket, subject, limit, window_s):
+        hits.append((bucket, limit, window_s))
+
+    monkeypatch.setattr(eval_routes, "hit", fake_hit)
+    api = TestClient(create_app())
+    assert api.post("/eval/run").status_code == 401  # not public: key required
+
+    monkeypatch.setattr(s, "eval_run_public", True)
+    assert api.post("/eval/run").status_code == 200
+    assert hits == [("eval_run", s.eval_run_public_per_hour, 3600)]
+    assert api.post("/eval/run", headers={"X-Service-Key": "s3cret"}).status_code == 200
+    assert len(hits) == 1  # the operator is not counted
+
+
+def test_prod_run_prunes_old_offline_reports_but_never_live_ones(monkeypatch, tmp_path):
+    from fastapi.testclient import TestClient
+
+    from saral.api.app import create_app
+    from saral.eval import store
+
+    for day in range(1, 6):
+        store.write_report(_report(f"2026-09-0{day}T00:00:00+00:00"), tmp_path)
+    store.write_report(_report("2026-09-02T00:00:00+00:00", tier="live"), tmp_path)
+    s = get_settings()
+    monkeypatch.setattr(s, "app_env", "prod")
+    monkeypatch.setattr(s, "eval_run_public", True)
+    monkeypatch.setattr(s, "eval_reports_keep", 3)
+    monkeypatch.setattr(s, "rate_limit_enabled", False)
+    _fake_eval_child(monkeypatch, tmp_path)
+    assert TestClient(create_app()).post("/eval/run").status_code == 200
+    names = sorted(p.name for p in tmp_path.glob("report_*.json"))
+    assert len([n for n in names if "_offline_" in n]) == 3
+    assert "report_20261013T000000_offline_v1.json" in names  # the new run is kept
+    assert [n for n in names if "_live_" in n] == ["report_20260902T000000_live_v1.json"]
 
 
 # --- gate ------------------------------------------------------------------------------------
