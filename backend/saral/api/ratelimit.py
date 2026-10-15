@@ -20,9 +20,12 @@ log = get_logger(__name__)
 
 
 def client_ip(request: Request) -> str:
-    header = get_settings().client_ip_header
-    if header and (value := request.headers.get(header)):
-        return value.split(",")[0].strip()
+    s = get_settings()
+    if s.client_ip_header and (value := request.headers.get(s.client_ip_header)):
+        hops = [h.strip() for h in value.split(",") if h.strip()]
+        if hops:
+            n = s.client_ip_from_right
+            return hops[-min(n, len(hops))] if n > 0 else hops[0]
     return request.client.host if request.client else "unknown"
 
 

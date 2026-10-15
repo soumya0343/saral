@@ -50,7 +50,8 @@ what changed in each phase and what is still open, see
 **Two runtimes, one image:** `api` (uvicorn) and `worker` (`python -m saral.worker.main`). The
 API never runs the graph inline; it enqueues and the worker executes. That gives crash-resume,
 horizontal scaling and partial-failure isolation. For local development `make dev` runs both in
-one process (`RUN_WORKER_INPROC=true`).
+one process (`RUN_WORKER_INPROC=true`). The live Hugging Face Space runs them as two processes in
+one container, with Postgres and Redis alongside (§16).
 
 **Saral never writes customer data.** A confirmed change, a claim, a ticket and every other
 escalation becomes a request for the customer's relationship manager (RM), a human who works in
@@ -96,6 +97,7 @@ sarvam/
 │   └── eval_reports/       # JSON run reports (offline and live)
 ├── tests/                  # 29 pytest files + conftest (forces offline determinism)
 ├── scripts/                # calibrate_floor.py
+├── deploy/hf-space/        # Hugging Face Space: supervisor app.py, build.sh, Space card
 ├── docs/
 │   ├── AUDIT_AND_ROADMAP.md  # audit, phase outcomes, open decisions
 │   ├── DEPLOY.md             # Fly / Render / Vercel runbook
@@ -553,6 +555,7 @@ default. [`.env.example`](.env.example) lists them all. The ones that change beh
 | `APP_ENV` | `dev` | `prod` refuses to start without `SESSION_SECRET` (≥32 bytes) and `RM_REQUEST_KEY` |
 | `DEMO_MODE` | `false` | show OTPs as a simulated SMS popup (needed to sign in locally) |
 | `SERVICE_API_KEY` | unset | enables the RM and other server-to-server routes |
+| `CLIENT_IP_HEADER` / `CLIENT_IP_FROM_RIGHT` | unset / 0 | real client IP for rate limits behind a proxy; `1` = last entry of `X-Forwarded-For` (proxies that append, e.g. Hugging Face) |
 | `RM_APPROVAL_ACTIONS` | all three writes | confirmed writes raised to the RM instead of executed |
 | `RM_REQUEST_KEY` | derived in dev | Fernet key for the requested change |
 | `SESSION_TTL_MIN` / `REFRESH_TTL_DAYS` | 30 / 14 | access and refresh token lifetimes |
@@ -570,9 +573,20 @@ default. [`.env.example`](.env.example) lists them all. The ones that change beh
 | `INJECTION_CLASSIFIER_MODEL` | unset | optional Prompt Guard 2 layer |
 | `CONFIG_VERSION` | `v1` | pins eval comparability |
 
-**Deploy** ([`docs/DEPLOY.md`](docs/DEPLOY.md)) — Fly.io (region `bom`, app + worker process
-groups) or Render (Blueprint: api, worker, Postgres, Redis; migrations on deploy). Frontend on
-Vercel with `NEXT_PUBLIC_API_URL`. One image, two commands; `data/` is baked in and read-only.
+**Deploy** ([`docs/DEPLOY.md`](docs/DEPLOY.md))
+
+- **Hugging Face ZeroGPU Space (live, free)** — https://soumya0343-saral.hf.space. ZeroGPU Spaces
+  must be Gradio apps, so [`deploy/hf-space/app.py`](deploy/hf-space/app.py) supervises one
+  container around Gradio's server:
+  - Postgres on local disk and Redis on localhost; migrations on boot.
+  - The worker as its own process, restarted if it exits.
+  - Saral's API mounted at `/api`; the static Next.js build at `/` and `/eval`, same origin.
+  - The database dumped to a private bucket at `/data` every 60s when it changed, and restored
+    on boot. Outbound port 5432 is blocked on Spaces, so a hosted Postgres is not an option.
+  - The GPU is never used: e5 runs on the Space's CPUs.
+  - `deploy/hf-space/build.sh` assembles the Space from the repo and uploads it.
+- **Fly.io / Render (paid)** — separate API and worker machines from one image; frontend on
+  Vercel with `NEXT_PUBLIC_API_URL`. `data/` is baked into the image and read-only.
 
 ---
 

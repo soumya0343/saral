@@ -1,4 +1,4 @@
-.PHONY: help install up down logs api worker test lint fmt typecheck migrate eval eval-gate eval-baseline eval-live eval-labels
+.PHONY: help install up down logs api worker test lint fmt typecheck migrate eval eval-gate eval-baseline eval-live eval-labels deploy-hf
 
 help:
 	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-12s\033[0m %s\n", $$1, $$2}'
@@ -65,3 +65,6 @@ calibrate-floor: ## Retrieval score-floor calibration for the active embedder (n
 
 eval-labels: ## Add the latest live run's replies to data/eval_labels/live_labels.yaml for human labelling
 	PYTHONPATH=backend uv run python -m saral.eval.labels export
+
+deploy-hf: ## Build the Hugging Face Space from this working tree and upload it (needs `hf auth login`)
+	deploy/hf-space/build.sh

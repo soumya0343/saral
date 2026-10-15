@@ -6,9 +6,9 @@
 #     REDIS_URL="rediss://default:<token>@<upstash-host>:<port>" \
 #     SESSION_SECRET="<32+ byte random string>" \
 #     RM_REQUEST_KEY="<Fernet key: encrypts requested changes at rest; boot fails without it>" \
-#     SARVAM_API_KEY="sk_..." \
-#     LLM_PROVIDER_ORDER="sarvam,anthropic,stub"
+#     GEMINI_API_KEY="..." GROQ_API_KEY="..."   # free tiers; SARVAM_API_KEY optional (language detection)
 # LLM keys are optional — without them the deterministic stub provider runs the demo.
+# Fly has no free plan for new accounts; the free deployment is the Hugging Face Space (docs/DEPLOY.md).
 
 app = "saral"
 primary_region = "bom"   # Mumbai — Sarvam proximity + DPDP data residency

@@ -67,3 +67,26 @@ async def test_limiter_fails_open_without_redis(monkeypatch):
     runbus.get_redis.cache_clear()
     await ratelimit.hit("t", "someone", limit=0, window_s=30)  # no exception: fail open
     runbus.get_redis.cache_clear()
+
+
+@pytest.mark.parametrize(
+    "header,from_right,expected",
+    [
+        ("6.6.6.6, 49.238.50.215", 1, "49.238.50.215"),  # appending proxy: forged entry ignored
+        ("49.238.50.215", 1, "49.238.50.215"),
+        ("6.6.6.6, 49.238.50.215, 10.0.0.1", 2, "49.238.50.215"),  # two proxies of ours
+        ("49.238.50.215", 3, "49.238.50.215"),  # fewer hops than configured: leftmost
+        ("203.0.113.9, 10.0.0.1", 0, "203.0.113.9"),  # 0 = first entry (overwriting proxies)
+    ],
+)
+def test_client_ip_reads_the_right_hop(monkeypatch, header, from_right, expected):
+    from starlette.requests import Request
+
+    from saral.api.ratelimit import client_ip
+    from saral.config import get_settings
+
+    monkeypatch.setattr(get_settings(), "client_ip_header", "X-Forwarded-For")
+    monkeypatch.setattr(get_settings(), "client_ip_from_right", from_right)
+    req = Request({"type": "http", "headers": [(b"x-forwarded-for", header.encode())],
+                   "client": ("10.16.34.130", 1)})
+    assert client_ip(req) == expected

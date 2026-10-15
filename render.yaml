@@ -1,6 +1,8 @@
 # render.yaml — Saral on Render (Blueprint).
 # Set secret env vars in the Render dashboard before first deploy:
-#   SESSION_SECRET + RM_REQUEST_KEY (required), SARVAM_API_KEY / ANTHROPIC_API_KEY / LLM_PROVIDER_ORDER (optional).
+#   SESSION_SECRET + RM_REQUEST_KEY (required), GEMINI_API_KEY / GROQ_API_KEY / SARVAM_API_KEY (optional).
+# Uses paid plans: Render's free tier has no background worker and caps web services at 512MB.
+# The free deployment is the Hugging Face Space (docs/DEPLOY.md).
 # DATABASE_URL and REDIS_URL are wired automatically from the managed services below.
 
 services:
@@ -26,9 +28,9 @@ services:
       - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
       - { key: SESSION_SECRET, sync: false }
       - { key: RM_REQUEST_KEY, sync: false }
+      - { key: GEMINI_API_KEY, sync: false }
+      - { key: GROQ_API_KEY, sync: false }
       - { key: SARVAM_API_KEY, sync: false }
-      - { key: ANTHROPIC_API_KEY, sync: false }
-      - { key: LLM_PROVIDER_ORDER, sync: false }
 
   - type: worker
     name: saral-worker
@@ -52,9 +54,9 @@ services:
       - { key: REDIS_URL, fromService: { name: saral-redis, type: redis, property: connectionString } }
       - { key: SESSION_SECRET, sync: false }
       - { key: RM_REQUEST_KEY, sync: false }
+      - { key: GEMINI_API_KEY, sync: false }
+      - { key: GROQ_API_KEY, sync: false }
       - { key: SARVAM_API_KEY, sync: false }
-      - { key: ANTHROPIC_API_KEY, sync: false }
-      - { key: LLM_PROVIDER_ORDER, sync: false }
 
   - type: redis
     name: saral-redis

@@ -8,6 +8,10 @@ Hindi, and Hinglish, retrieves grounded answers from a policy corpus, takes
 authorized account actions, enforces compliance + PII rules on every turn, and is
 validated by a labeled evaluation suite with an LLM judge.
 
+**Live demo:** https://soumya0343-saral.hf.space — tap a demo account (synthetic data; the OTP
+appears as a simulated SMS popup). Free Hugging Face Space; it sleeps when unused, so the first
+visit can take about a minute.
+
 ## Why this is interesting
 
 - **Identity is token-derived, never trusted from the message** — a mock IdP mints
@@ -295,21 +299,20 @@ Run `make help` for all targets.
 
 ## Deploy
 
-Two process groups (API + worker) share one image. Default targets: **Fly.io** or
-**Render** (single container; K8s out of scope). Frontend → **Vercel**. Full runbook:
-[`docs/DEPLOY.md`](docs/DEPLOY.md).
+**Live:** a free Hugging Face ZeroGPU Space — https://soumya0343-saral.hf.space. One container
+runs the same processes as `docker-compose.yml`: Postgres and Redis inside the Space, migrations
+on boot, the worker as its own process, the API mounted at `/api`, and the static frontend at
+`/`. The database is dumped to a private storage bucket every minute when it changed and
+restored on boot, so data survives restarts.
 
 ```bash
-# Fly.io
-fly launch --no-deploy --name saral --region bom
-fly postgres create --name saral-postgres --region bom && fly postgres attach saral-postgres
-fly secrets set DATABASE_URL="postgresql+asyncpg://..." REDIS_URL="rediss://..." \
-                SESSION_SECRET="$(openssl rand -hex 32)" \
-                RM_REQUEST_KEY="<Fernet key, see docs/DEPLOY.md>"   # prod refuses to start without it
-fly deploy && fly ssh console -C "cd /app && PYTHONPATH=backend python -m alembic upgrade head"
-
-# Render: push to GitHub → New Blueprint → select render.yaml (migrations run on deploy)
+brew install hf && hf auth login
+deploy/hf-space/build.sh        # assemble the Space from this repo and upload (rebuilds it)
 ```
+
+The Space is built from your local working tree, not from GitHub. Paid alternatives with
+separate API and worker machines: **Fly.io** (`fly.toml`) and **Render** (`render.yaml`), with the
+frontend on Vercel. Full runbook, secrets and operations: [`docs/DEPLOY.md`](docs/DEPLOY.md).
 
 > No LLM key needed — without one the deterministic stub provider serves a working,
 > free demo (full pipeline, passing eval, streaming traces).

@@ -124,6 +124,10 @@ class Settings(BaseSettings):
     rate_limit_enabled: bool = True
     # Header carrying the real client IP behind a proxy (Fly: "Fly-Client-IP"); unset -> socket.
     client_ip_header: str | None = None
+    # Which entry of a comma-separated header (X-Forwarded-For) is the client, counted from the
+    # right: 1 = the last one, the address our own proxy saw. Proxies that append (Hugging Face)
+    # leave whatever the client sent in front, so the first entry can be forged. 0 = first entry.
+    client_ip_from_right: int = 0
 
     # --- Compliance ---
     pii_backend: Literal["regex", "presidio"] = "regex"

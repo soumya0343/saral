@@ -38,3 +38,6 @@ data/eval_reports/
 .agents/
 skills-lock.json
 .gstack/
+
+# Assembled Hugging Face Space (deploy/hf-space/build.sh)
+deploy/hf-space/.build/
