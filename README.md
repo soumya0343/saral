@@ -96,8 +96,11 @@ yet validated against human labels, so live scores are spot checks, not a headli
 
 ## Architecture
 
-Full reference: [`ARCHITECTURE.md`](ARCHITECTURE.md). Audit, phase outcomes and open items:
-[`docs/AUDIT_AND_ROADMAP.md`](docs/AUDIT_AND_ROADMAP.md).
+- [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md) — the detailed walkthrough: a message's full
+  path, when retrieval runs and why, every node, how evaluation and the dashboard work, and why
+  each technology was chosen.
+- [`ARCHITECTURE.md`](ARCHITECTURE.md) — the shorter reference.
+- [`docs/AUDIT_AND_ROADMAP.md`](docs/AUDIT_AND_ROADMAP.md) — audit, phase outcomes, open items.
 
 ```
                        Redis Streams (run bus)
@@ -302,7 +305,8 @@ Designed for regulated Indian enterprises under the **DPDP Act 2023**:
 - **PII** — redacted before storage and before any logged preview (regex by default,
   Presidio optional). The append-only, hash-chained audit log holds only reason codes and
   tokenized references, so its 7-year hold stays compatible with erasure.
-- **Consent + erasure** — processing proceeds only while consent is granted; `DELETE /me/data`
+- **Consent + erasure** — consent is recorded per conversation (defaulting to granted — explicit
+  capture isn't built, see Limitations) and processing stops once it is withdrawn; `DELETE /me/data`
   tombstones PII-bearing rows (including the customer's RM requests) and withdraws consent,
   leaving the audit chain valid. Redacted messages are purged after 90 days.
 - **Purpose limitation** — a deterministic intent→domain map bounds which data each intent may
@@ -332,6 +336,11 @@ outlives its TTL is abandoned, never fired, and escalated.
   headline number.
 - **Free-tier limits** — on the public demo every visitor shares one set of free model quotas;
   past them, replies fall back to the deterministic stub.
+- **Consent is implicit, and model calls aren't masked** — conversations start with consent
+  recorded as granted (no notice or checkbox), and the current message plus up to 3 passages
+  from the customer's own documents are sent unredacted to the model providers. Fine for
+  synthetic data; real customer data needs explicit consent and masking first. Details:
+  [`docs/HOW_IT_WORKS.md` §10](docs/HOW_IT_WORKS.md#10-consent-and-personal-data).
 - **Retrieval floor off** — calibration showed e5's top score can't separate answerable from
   unanswerable questions without wrongly escalating about 17% of real ones; only empty
   retrieval escalates.

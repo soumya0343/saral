@@ -6,7 +6,9 @@
 > cite *this customer's own* policy clause (e.g. "rejected under rider Clause R1.3"), not a
 > generic FAQ.
 
-This document describes the system as built (through roadmap Phase 4). For what was audited,
+This document describes the system as built (through roadmap Phase 4). For a step-by-step
+walkthrough — a message's full path, when retrieval runs, how evaluation works, and why each
+technology was chosen — see [`docs/HOW_IT_WORKS.md`](docs/HOW_IT_WORKS.md). For what was audited,
 what changed in each phase and what is still open, see
 [`docs/AUDIT_AND_ROADMAP.md`](docs/AUDIT_AND_ROADMAP.md); for deployment steps see
 [`docs/DEPLOY.md`](docs/DEPLOY.md); for how to run it locally see the [README](README.md).
@@ -626,3 +628,7 @@ The RM-owns-writes decision (Phase 4) is recorded in the roadmap, not yet as an 
 - A real SMS channel and a real identity provider (both mocked and labelled as such).
 - A real core insurer system (the `mock_*` tables stand in for it).
 - OpenTelemetry tracing, a vector database (retrieval is in-process), and a validated live judge.
+- Explicit consent capture (consent is recorded per conversation but defaults to granted, with
+  no notice), and masking of personal data before external model calls — the current message
+  and retrieved passages reach the model providers unredacted. See
+  [`docs/HOW_IT_WORKS.md` §10](docs/HOW_IT_WORKS.md#10-consent-and-personal-data).
